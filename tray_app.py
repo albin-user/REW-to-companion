@@ -226,7 +226,7 @@ class REWBridgeTray:
 
     def open_log_folder(self, icon=None, item=None):
         """Open the folder containing the log file."""
-        folder = str(rew_bridge.APP_DIR)
+        folder = str(rew_bridge.DATA_DIR)
         if platform.system() == "Windows":
             os.startfile(folder)
         elif platform.system() == "Darwin":

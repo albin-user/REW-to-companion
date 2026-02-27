@@ -35,7 +35,7 @@ A bridge that launches REW (Room EQ Wizard) headlessly, reads SPL values from RE
 
 ### Configuration
 
-The app stores its settings in `config.json` in the install directory:
+The app stores its settings in `config.json`. On Windows, this is located in `%LOCALAPPDATA%\REW SPL Bridge\` (along with log files). When running from source or on macOS, files are stored in the script directory.
 
 | Setting | Default | Description |
 |---------|---------|-------------|

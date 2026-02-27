@@ -13,8 +13,10 @@ import math
 import os
 import pathlib
 import platform
+import shutil
 import socket
 import subprocess
+import sys
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -27,9 +29,25 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# App directory and log file paths (used by tray_app.py)
+# App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent
-LOG_FILE = APP_DIR / "rew_bridge.log"
+
+# Data directory for writable files (config, logs)
+# On Windows frozen builds, use %LOCALAPPDATA% to avoid Program Files permission issues
+if getattr(sys, "frozen", False) and platform.system() == "Windows":
+    DATA_DIR = pathlib.Path(os.environ["LOCALAPPDATA"]) / "REW SPL Bridge"
+else:
+    DATA_DIR = APP_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# One-time migration: copy config.json from install dir to DATA_DIR on upgrade
+if getattr(sys, "frozen", False) and platform.system() == "Windows":
+    _old_config = APP_DIR.parent / "config.json"
+    _new_config = DATA_DIR / "config.json"
+    if _old_config.exists() and not _new_config.exists():
+        shutil.copy2(_old_config, _new_config)
+
+LOG_FILE = DATA_DIR / "rew_bridge.log"
 
 # Default configuration
 DEFAULTS = {
@@ -44,7 +62,7 @@ DEFAULTS = {
 def load_config() -> dict:
     """Load configuration from config.json, falling back to defaults."""
     config = dict(DEFAULTS)
-    config_path = APP_DIR / "config.json"
+    config_path = DATA_DIR / "config.json"
 
     if config_path.exists():
         try:
@@ -62,7 +80,7 @@ def load_config() -> dict:
 
 def save_config(config: dict):
     """Save configuration to config.json."""
-    config_path = APP_DIR / "config.json"
+    config_path = DATA_DIR / "config.json"
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
 
@@ -110,7 +128,7 @@ def setup_logging(log_level: str = "INFO"):
 config = load_config()
 
 # On first run (no config.json), find a free port and save config
-config_path = APP_DIR / "config.json"
+config_path = DATA_DIR / "config.json"
 if not config_path.exists():
     config["bridge_port"] = find_free_port(config["bridge_port"])
     save_config(config)

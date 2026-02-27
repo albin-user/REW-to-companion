@@ -47,7 +47,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [Code]
 const
@@ -80,7 +80,7 @@ var
   RawContent: AnsiString;
   Content: String;
 begin
-  ConfigPath := ExpandConstant('{app}\config.json');
+  ConfigPath := ExpandConstant('{localappdata}\REW SPL Bridge\config.json');
   if FileExists(ConfigPath) then
   begin
     if LoadStringFromFile(ConfigPath, RawContent) then
@@ -94,9 +94,12 @@ end;
 
 procedure CreateDefaultConfig;
 var
+  ConfigDir: String;
   ConfigPath: String;
 begin
-  ConfigPath := ExpandConstant('{app}\config.json');
+  ConfigDir := ExpandConstant('{localappdata}\REW SPL Bridge');
+  ForceDirectories(ConfigDir);
+  ConfigPath := ConfigDir + '\config.json';
   if not FileExists(ConfigPath) then
   begin
     SaveStringToFile(ConfigPath,
