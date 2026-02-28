@@ -368,6 +368,9 @@ async def shutdown_rew():
     """Shutdown REW gracefully."""
     global rew_process
 
+    if not state.rew_running and rew_process is None:
+        return
+
     try:
         response = await http_client.post(
             f"{REW_API_BASE}/application/command",
@@ -406,20 +409,28 @@ async def restart_rew():
 
 
 async def subscription_keepalive():
-    """Periodically re-subscribe to handle dropped subscriptions."""
+    """Periodically check REW connection and re-subscribe if needed."""
     while True:
-        await asyncio.sleep(60)  # Check every minute
-        if state.rew_running:
-            try:
-                # Test if REW is still responding
-                response = await http_client.get(
-                    f"{REW_API_BASE}/application",
-                    timeout=5.0
-                )
-                if response.status_code != 200:
-                    logger.warning("REW API not responding, attempting to resubscribe")
+        await asyncio.sleep(10)
+        try:
+            response = await http_client.get(
+                f"{REW_API_BASE}/application",
+                timeout=5.0
+            )
+            if response.status_code == 200:
+                if not state.rew_running:
+                    logger.info("REW API connection restored")
+                    state.rew_running = True
+                    await configure_spl_meter()
                     await subscribe_to_spl_meter()
-            except httpx.RequestError:
+                else:
+                    await subscribe_to_spl_meter()
+            else:
+                logger.warning("REW API returned status %s", response.status_code)
+                if state.rew_running:
+                    state.rew_running = False
+        except httpx.RequestError:
+            if state.rew_running:
                 logger.warning("Lost connection to REW API")
                 state.rew_running = False
 
@@ -434,8 +445,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting REW SPL Meter Bridge")
 
-    # Launch REW
-    if launch_rew():
+    # Check if REW is already running before trying to launch
+    if await wait_for_rew_api(timeout=3.0):
+        logger.info("REW is already running, connecting to existing instance")
+        state.rew_running = True
+        await configure_spl_meter()
+        await subscribe_to_spl_meter()
+    elif launch_rew():
         if await wait_for_rew_api():
             await configure_spl_meter()
             await subscribe_to_spl_meter()

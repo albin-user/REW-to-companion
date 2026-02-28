@@ -103,25 +103,30 @@ class REWBridgeTray:
         port = self.config.get("bridge_port", 8080)
         url = f"http://localhost:{port}/health"
 
-        while not self._stop_event.is_set():
-            try:
-                with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0) as client:
+            while not self._stop_event.is_set():
+                try:
                     resp = client.get(url)
                     if resp.status_code == 200:
                         data = resp.json()
                         new_status = data.get("rew_running", False)
                     else:
                         new_status = False
-            except Exception:
-                new_status = False
+                except Exception:
+                    new_status = False
 
-            if new_status != self.connected:
-                self.connected = new_status
-                if self.icon:
-                    self.icon.icon = self.create_status_icon(self.connected)
-                    self.icon.update_menu()
+                if new_status != self.connected:
+                    self.connected = new_status
+                    if self.icon:
+                        self.icon.icon = self.create_status_icon(self.connected)
+                        self.icon.title = (
+                            "REW SPL Bridge — Connected"
+                            if self.connected
+                            else "REW SPL Bridge — Disconnected"
+                        )
+                        self.icon.update_menu()
 
-            self._stop_event.wait(5)
+                self._stop_event.wait(5)
 
     def toggle_rew_gui(self, icon=None, item=None):
         """Toggle the Show REW GUI setting."""
@@ -239,22 +244,19 @@ class REWBridgeTray:
         logger.info("Quit requested — shutting down")
         self._stop_event.set()
 
-        # Stop uvicorn server
+        # Force-exit safety net — start BEFORE icon.stop() in case it blocks
+        def _force_exit():
+            time.sleep(8)
+            logger.warning("Graceful shutdown timed out, forcing exit")
+            os._exit(0)
+
+        threading.Thread(target=_force_exit, daemon=True).start()
+
+        # Stop uvicorn — triggers lifespan shutdown which handles REW cleanup
         if self.server:
             self.server.should_exit = True
 
-        # Shutdown REW via API
-        port = self.config.get("bridge_port", 8080)
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                client.post(
-                    f"http://localhost:{port}/api/control",
-                    json={"action": "shutdown"},
-                )
-        except Exception:
-            pass  # Server may already be stopping
-
-        # Stop tray icon (releases main thread)
+        # Release tray icon (unblocks main thread)
         if self.icon:
             self.icon.stop()
 
@@ -274,7 +276,7 @@ class REWBridgeTray:
         self.icon = pystray.Icon(
             name="REW SPL Bridge",
             icon=self.create_status_icon(False),
-            title="REW SPL Meter Bridge",
+            title="REW SPL Bridge — Starting...",
             menu=self.build_menu(),
         )
         self.icon.run(setup=self.on_setup)
