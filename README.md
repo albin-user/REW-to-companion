@@ -29,6 +29,7 @@ A bridge that launches REW (Room EQ Wizard) headlessly, reads SPL values from RE
 - **Green circle** — REW is connected and running
 - **Right-click menu:**
   - Status and port display
+  - Show REW GUI — toggle headless vs. GUI mode (takes effect on next REW launch)
   - Change Port — opens a dialog to set a new port (restart required)
   - Open Log / Open Log Folder — access log files for troubleshooting
   - Quit — cleanly shuts down REW and the bridge
@@ -71,7 +72,9 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 | Value | Source |
 |-------|--------|
 | SPL A Slow | Direct from REW API |
+| 1-min Leq | Direct from REW API |
 | 2-min Leq | Computed from buffered SPL readings |
+| 10-min Leq | Direct from REW API |
 | 15-min Leq | Direct from REW API (rolling Leq) |
 
 ## API Endpoints
@@ -83,7 +86,9 @@ Returns current SPL values:
 ```json
 {
   "spl_a_slow": 75.2,
+  "leq_1min": 74.5,
   "leq_2min": 74.8,
+  "leq_10min": 73.5,
   "leq_15min": 73.1,
   "elapsed_time": 125.5,
   "valid_2min": true,
@@ -139,7 +144,9 @@ Use the Generic HTTP module in Companion to poll `/api/spl` and display values.
 
 Example variable parsing:
 - `$.spl_a_slow` — Current SPL
+- `$.leq_1min` — 1-minute Leq
 - `$.leq_2min` — 2-minute Leq
+- `$.leq_10min` — 10-minute Leq
 - `$.leq_15min` — 15-minute Leq
 
 ## macOS
@@ -173,7 +180,7 @@ python generate_icon.py
 pyinstaller --clean rew_bridge.spec
 
 # Build installer (requires Inno Setup on Windows)
-iscc /DMyAppVersion=0.1.0 installer.iss
+iscc /DMyAppVersion=0.2.3 installer.iss
 ```
 
 ### Releases
@@ -181,8 +188,8 @@ iscc /DMyAppVersion=0.1.0 installer.iss
 Releases are built automatically by GitHub Actions when a version tag is pushed:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 This triggers the CI pipeline which builds the PyInstaller bundle, creates the Inno Setup installer, and publishes it as a GitHub Release.
