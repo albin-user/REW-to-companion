@@ -74,32 +74,19 @@ begin
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
-procedure SetRewGui;
-var
-  ConfigPath: String;
-  RawContent: AnsiString;
-  Content: String;
-begin
-  ConfigPath := ExpandConstant('{localappdata}\REW SPL Bridge\config.json');
-  if FileExists(ConfigPath) then
-  begin
-    if LoadStringFromFile(ConfigPath, RawContent) then
-    begin
-      Content := RawContent;
-      StringChangeEx(Content, '"rew_gui": false', '"rew_gui": true', True);
-      SaveStringToFile(ConfigPath, Content, False);
-    end;
-  end;
-end;
-
-procedure CreateDefaultConfig;
+procedure CreateDefaultConfig(RewGui: Boolean);
 var
   ConfigDir: String;
   ConfigPath: String;
+  GuiValue: String;
 begin
   ConfigDir := ExpandConstant('{localappdata}\REW SPL Bridge');
   ForceDirectories(ConfigDir);
   ConfigPath := ConfigDir + '\config.json';
+  if RewGui then
+    GuiValue := 'true'
+  else
+    GuiValue := 'false';
   if not FileExists(ConfigPath) then
   begin
     SaveStringToFile(ConfigPath,
@@ -108,7 +95,7 @@ begin
       '    "bridge_port": 8080,' + #13#10 +
       '    "rew_api_port": 4735,' + #13#10 +
       '    "log_level": "INFO",' + #13#10 +
-      '    "rew_gui": false' + #13#10 +
+      '    "rew_gui": ' + GuiValue + #13#10 +
       '}' + #13#10,
       False);
   end;
@@ -118,9 +105,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    CreateDefaultConfig;
-    if IsTaskSelected('rewgui') then
-      SetRewGui;
+    CreateDefaultConfig(IsTaskSelected('rewgui'));
     if IsTaskSelected('firewall') then
       AddFirewallRule;
   end;

@@ -100,6 +100,7 @@ def save_config(config: dict):
     import tempfile
 
     config_path = DATA_DIR / "config.json"
+    tmp_path = None
     try:
         fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
@@ -107,6 +108,12 @@ def save_config(config: dict):
         # On Windows, os.replace is atomic if on the same volume
         os.replace(tmp_path, config_path)
     except OSError:
+        # Clean up temp file if it was created
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         # Fall back to direct write if atomic write fails
         with open(config_path, "w") as f:
             json.dump(config, f, indent=4)
@@ -548,7 +555,9 @@ async def get_spl():
 
     return {
         "spl_a_slow": state.spl_a_slow,
+        "leq_1min": state.leq_1min,
         "leq_2min": round(leq_2min, 1) if leq_2min is not None else None,
+        "leq_10min": state.leq_10min,
         "leq_15min": state.leq_15min,
         "elapsed_time": state.elapsed_time,
         "valid_2min": leq_2min is not None,

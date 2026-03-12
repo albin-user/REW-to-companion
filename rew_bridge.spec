@@ -3,8 +3,6 @@
 
 from PyInstaller.utils.hooks import collect_submodules
 
-block_cipher = None
-
 # Collect all uvicorn submodules (it uses dynamic imports)
 uvicorn_imports = collect_submodules("uvicorn")
 
@@ -32,13 +30,10 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(
     pyz,
