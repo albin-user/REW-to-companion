@@ -8,7 +8,6 @@ status, configuration, and log access.
 """
 
 import ctypes
-import json
 import logging
 import os
 import platform
@@ -31,11 +30,15 @@ logger = logging.getLogger(__name__)
 
 class REWBridgeTray:
     def __init__(self):
-        self.config = rew_bridge.load_config()
         self.connected = False
         self.server = None
         self.icon = None
         self._stop_event = threading.Event()
+
+    @property
+    def config(self):
+        """Use rew_bridge.config directly to avoid drift between two config dicts."""
+        return rew_bridge.config
 
     def create_status_icon(self, connected: bool) -> PIL.Image.Image:
         """Create a 64x64 tray icon: green circle if connected, red if not."""
@@ -103,6 +106,11 @@ class REWBridgeTray:
         port = self.config.get("bridge_port", 8080)
         url = f"http://localhost:{port}/health"
 
+        # Wait for uvicorn to bind the port before first health check
+        self._stop_event.wait(3)
+        if self._stop_event.is_set():
+            return
+
         with httpx.Client(timeout=3.0) as client:
             while not self._stop_event.is_set():
                 try:
@@ -138,10 +146,21 @@ class REWBridgeTray:
         import tkinter as tk
         from tkinter import messagebox
 
-        new_value = not self.config.get("rew_gui", False)
+        old_value = self.config.get("rew_gui", False)
+        new_value = not old_value
         self.config["rew_gui"] = new_value
-        rew_bridge.config["rew_gui"] = new_value
-        rew_bridge.save_config(self.config)
+        try:
+            rew_bridge.save_config(self.config)
+        except OSError as e:
+            self.config["rew_gui"] = old_value
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(
+                "Save Failed",
+                f"Could not save config: {e}\nSetting was not changed.",
+            )
+            root.destroy()
+            return
 
         root = tk.Tk()
         root.withdraw()
@@ -191,20 +210,34 @@ class REWBridgeTray:
 
         # Update config
         self.config["bridge_port"] = new_port
-        rew_bridge.save_config(self.config)
+        try:
+            rew_bridge.save_config(self.config)
+        except OSError as e:
+            self.config["bridge_port"] = current
+            messagebox.showerror(
+                "Save Failed",
+                f"Could not save config: {e}\nPort was not changed.",
+            )
+            root.destroy()
+            return
 
         # Update firewall rule on Windows
+        firewall_ok = True
         if platform.system() == "Windows":
-            self._update_firewall_rule(current, new_port)
+            firewall_ok = self._update_firewall_rule(current, new_port)
 
-        messagebox.showinfo(
-            "Port Changed",
-            f"Port changed to {new_port}.\nRestart the app for this to take effect.",
-        )
+        msg = f"Port changed to {new_port}.\nRestart the app for this to take effect."
+        if not firewall_ok:
+            msg += "\n\nNote: Firewall rule could not be updated. You may need to allow the new port manually."
+
+        messagebox.showinfo("Port Changed", msg)
         root.destroy()
 
-    def _update_firewall_rule(self, old_port: int, new_port: int):
-        """Update the Windows firewall rule via UAC-elevated netsh commands."""
+    def _update_firewall_rule(self, old_port: int, new_port: int) -> bool:
+        """Update the Windows firewall rule via UAC-elevated netsh commands.
+
+        Returns True if the firewall rule was likely updated, False otherwise.
+        """
         try:
             # Build a combined command: delete old rule then add new one
             cmd = (
@@ -212,32 +245,37 @@ class REWBridgeTray:
                 f'netsh advfirewall firewall add rule name="REW SPL Bridge" '
                 f"dir=in action=allow protocol=tcp localport={new_port}"
             )
-            # Request UAC elevation via ShellExecuteW
-            ctypes.windll.shell32.ShellExecuteW(
+            # Request UAC elevation via ShellExecuteW (returns >32 on success)
+            result = ctypes.windll.shell32.ShellExecuteW(
                 None, "runas", "cmd.exe", f"/c {cmd}", None, 0
             )
+            if result <= 32:
+                logger.warning("Firewall update may have failed (ShellExecute returned %s)", result)
+                return False
+            return True
         except Exception as e:
             logger.warning("Could not update firewall rule: %s", e)
+            return False
 
     def open_log(self, icon=None, item=None):
         """Open the log file in the default text editor."""
         log_path = str(rew_bridge.LOG_FILE)
         if platform.system() == "Windows":
             os.startfile(log_path)
-        elif platform.system() == "Darwin":
-            subprocess.Popen(["open", log_path])
         else:
-            subprocess.Popen(["xdg-open", log_path])
+            cmd = "open" if platform.system() == "Darwin" else "xdg-open"
+            p = subprocess.Popen([cmd, log_path])
+            p.communicate()  # Wait and reap to avoid ResourceWarning
 
     def open_log_folder(self, icon=None, item=None):
         """Open the folder containing the log file."""
         folder = str(rew_bridge.DATA_DIR)
         if platform.system() == "Windows":
             os.startfile(folder)
-        elif platform.system() == "Darwin":
-            subprocess.Popen(["open", folder])
         else:
-            subprocess.Popen(["xdg-open", folder])
+            cmd = "open" if platform.system() == "Darwin" else "xdg-open"
+            p = subprocess.Popen([cmd, folder])
+            p.communicate()  # Wait and reap to avoid ResourceWarning
 
     def quit(self, icon=None, item=None):
         """Clean shutdown: stop server, shutdown REW, release tray icon."""
@@ -246,8 +284,9 @@ class REWBridgeTray:
 
         # Force-exit safety net — start BEFORE icon.stop() in case it blocks
         def _force_exit():
-            time.sleep(8)
+            time.sleep(12)
             logger.warning("Graceful shutdown timed out, forcing exit")
+            logging.shutdown()
             os._exit(0)
 
         threading.Thread(target=_force_exit, daemon=True).start()
@@ -270,9 +309,6 @@ class REWBridgeTray:
 
     def run(self):
         """Run the tray application (blocks main thread)."""
-        # Load .ico file for Windows taskbar if available
-        ico_path = rew_bridge.APP_DIR / "app_icon.ico"
-
         self.icon = pystray.Icon(
             name="REW SPL Bridge",
             icon=self.create_status_icon(False),

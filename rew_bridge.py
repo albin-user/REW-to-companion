@@ -29,13 +29,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+__version__ = "0.2.2"
+
 # App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent
 
 # Data directory for writable files (config, logs)
 # On Windows frozen builds, use %LOCALAPPDATA% to avoid Program Files permission issues
 if getattr(sys, "frozen", False) and platform.system() == "Windows":
-    DATA_DIR = pathlib.Path(os.environ["LOCALAPPDATA"]) / "REW SPL Bridge"
+    DATA_DIR = pathlib.Path(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")) / "REW SPL Bridge"
 else:
     DATA_DIR = APP_DIR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -75,14 +77,39 @@ def load_config() -> dict:
             # Will be logged once logging is set up; use defaults
             pass
 
+    # Validate types and ranges
+    if not isinstance(config["bridge_port"], int) or not (1024 <= config["bridge_port"] <= 65535):
+        print(f"WARNING: Invalid bridge_port {config['bridge_port']!r}, using default {DEFAULTS['bridge_port']}", file=sys.stderr)
+        config["bridge_port"] = DEFAULTS["bridge_port"]
+    if not isinstance(config["rew_api_port"], int) or not (1 <= config["rew_api_port"] <= 65535):
+        print(f"WARNING: Invalid rew_api_port {config['rew_api_port']!r}, using default {DEFAULTS['rew_api_port']}", file=sys.stderr)
+        config["rew_api_port"] = DEFAULTS["rew_api_port"]
+    config["log_level"] = str(config.get("log_level", "INFO"))
+    if config["log_level"].upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        print(f"WARNING: Invalid log_level {config['log_level']!r}, using default {DEFAULTS['log_level']}", file=sys.stderr)
+        config["log_level"] = DEFAULTS["log_level"]
+    if not isinstance(config.get("rew_gui"), bool):
+        print(f"WARNING: Invalid rew_gui {config.get('rew_gui')!r}, coercing to bool", file=sys.stderr)
+        config["rew_gui"] = bool(config.get("rew_gui", False))
+
     return config
 
 
 def save_config(config: dict):
-    """Save configuration to config.json."""
+    """Save configuration to config.json (atomic write via temp file + rename)."""
+    import tempfile
+
     config_path = DATA_DIR / "config.json"
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=4)
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=4)
+        # On Windows, os.replace is atomic if on the same volume
+        os.replace(tmp_path, config_path)
+    except OSError:
+        # Fall back to direct write if atomic write fails
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=4)
 
 
 def find_free_port(start: int = 8080) -> int:
@@ -94,12 +121,12 @@ def find_free_port(start: int = 8080) -> int:
                 return port
         except OSError:
             continue
-    return start  # Fallback to start port
+    raise OSError(f"No free port found in range {start}-{start + 99}")
 
 
 def setup_logging(log_level: str = "INFO"):
     """Configure logging with RotatingFileHandler and console output."""
-    level = getattr(logging, log_level.upper(), logging.INFO)
+    level = getattr(logging, str(log_level).upper(), logging.INFO)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
@@ -193,14 +220,14 @@ class SPLValues(BaseModel):
     meterNumber: int = 1
     weighting: str = "A"
     filter: str = "Slow"
-    spl: float = 0.0
-    leq: float = 0.0
+    spl: float
+    leq: float
     isRollingLeq: bool = False
     rollingLeqMinutes: int = 0
     leq1m: float = 0.0
     leq10m: float = 0.0
     sel: float = 0.0
-    elapsedTime: float = 0.0
+    elapsedTime: float
 
 
 def find_rew_executable() -> Optional[str]:
@@ -275,7 +302,6 @@ def launch_rew() -> Optional[subprocess.Popen]:
             logger.error(f"Unsupported platform: {system}")
             return None
 
-        state.rew_running = True
         return rew_process
 
     except Exception as e:
@@ -383,35 +409,56 @@ async def shutdown_rew():
     if rew_process:
         try:
             rew_process.terminate()
-            rew_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            rew_process.kill()
+            await asyncio.wait_for(
+                asyncio.to_thread(rew_process.wait), timeout=5
+            )
+        except (asyncio.TimeoutError, OSError):
+            try:
+                rew_process.kill()
+            except OSError:
+                pass
         rew_process = None
 
     state.rew_running = False
+    state.measurement_active = False
+    state.spl_a_slow = None
+    state.leq_15min = None
+    state.leq_1min = None
+    state.leq_10min = None
+    state.elapsed_time = 0.0
+    state.last_update = 0.0
+    state.spl_buffer.clear()
+
+
+_restart_lock = asyncio.Lock()
 
 
 async def restart_rew():
     """Restart REW."""
-    logger.info("Restarting REW...")
-    await shutdown_rew()
-    await asyncio.sleep(2)  # Give time for cleanup
+    if _restart_lock.locked():
+        logger.warning("Restart already in progress, skipping")
+        return False
 
-    if launch_rew():
-        if await wait_for_rew_api():
-            await configure_spl_meter()
-            await subscribe_to_spl_meter()
-            logger.info("REW restarted successfully")
-            return True
+    async with _restart_lock:
+        logger.info("Restarting REW...")
+        await shutdown_rew()
+        await asyncio.sleep(2)  # Give time for cleanup
 
-    logger.error("Failed to restart REW")
-    return False
+        if launch_rew():
+            if await wait_for_rew_api():
+                state.rew_running = True
+                await configure_spl_meter()
+                await subscribe_to_spl_meter()
+                logger.info("REW restarted successfully")
+                return True
+
+        logger.error("Failed to restart REW")
+        return False
 
 
 async def subscription_keepalive():
     """Periodically check REW connection and re-subscribe if needed."""
     while True:
-        await asyncio.sleep(10)
         try:
             response = await http_client.get(
                 f"{REW_API_BASE}/application",
@@ -423,7 +470,13 @@ async def subscription_keepalive():
                     state.rew_running = True
                     await configure_spl_meter()
                     await subscribe_to_spl_meter()
-                else:
+                elif state.last_update > 0 and (time.time() - state.last_update) > 30:
+                    logger.info("No SPL data for 30s, re-subscribing")
+                    await configure_spl_meter()
+                    await subscribe_to_spl_meter()
+                elif state.last_update == 0 and state.rew_running:
+                    logger.info("No SPL data received yet, re-subscribing")
+                    await configure_spl_meter()
                     await subscribe_to_spl_meter()
             else:
                 logger.warning("REW API returned status %s", response.status_code)
@@ -433,6 +486,9 @@ async def subscription_keepalive():
             if state.rew_running:
                 logger.warning("Lost connection to REW API")
                 state.rew_running = False
+        except Exception:
+            logger.exception("Unexpected error in keepalive loop")
+        await asyncio.sleep(10)
 
 
 @asynccontextmanager
@@ -453,8 +509,11 @@ async def lifespan(app: FastAPI):
         await subscribe_to_spl_meter()
     elif launch_rew():
         if await wait_for_rew_api():
+            state.rew_running = True
             await configure_spl_meter()
             await subscribe_to_spl_meter()
+        else:
+            logger.error("REW launched but API did not become available")
 
     # Start keepalive task
     keepalive_task = asyncio.create_task(subscription_keepalive())
@@ -477,7 +536,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="REW SPL Meter Bridge",
     description="Bridge between REW SPL meter and Bitfocus Companion",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan
 )
 
@@ -489,7 +548,7 @@ async def get_spl():
 
     return {
         "spl_a_slow": state.spl_a_slow,
-        "leq_2min": round(leq_2min, 1) if leq_2min else None,
+        "leq_2min": round(leq_2min, 1) if leq_2min is not None else None,
         "leq_15min": state.leq_15min,
         "elapsed_time": state.elapsed_time,
         "valid_2min": leq_2min is not None,
@@ -523,6 +582,7 @@ async def control(request: ControlRequest):
         success = await send_spl_command("Stop")
         if success:
             state.measurement_active = False
+            state.spl_buffer.clear()
         return {"status": "ok" if success else "error", "action": action}
 
     elif action == "restart":
@@ -547,9 +607,13 @@ async def rew_callback(values: SPLValues):
     state.leq_15min = values.leq if values.isRollingLeq and values.rollingLeqMinutes == 15 else state.leq_15min
     state.leq_1min = values.leq1m
     state.leq_10min = values.leq10m
+    # Detect measurement state from elapsed time progression
+    if values.elapsedTime > state.elapsed_time:
+        state.measurement_active = True
+    else:
+        state.measurement_active = False
     state.elapsed_time = values.elapsedTime
     state.last_update = time.time()
-    state.measurement_active = True
 
     # Add to buffer for 2-min Leq calculation
     state.spl_buffer.append(values.spl)
