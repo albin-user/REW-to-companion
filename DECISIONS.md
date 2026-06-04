@@ -183,6 +183,29 @@ goes stale — a human backstop over auto-recovery.
 
 ---
 
+## 7b. Web dashboard, thresholds & max (v0.3.3)
+
+- The bridge serves a **responsive web dashboard at `GET /`** (`dashboard.py`). HTML is
+  an **embedded string** served via `HTMLResponse` — deliberately *not* a bundled file,
+  to avoid any PyInstaller frozen-path resolution risk. Vanilla HTML/CSS/JS, **no CDN**
+  (works on an isolated LAN). Responsive via CSS Grid `auto-fit`/`minmax` + `clamp()`
+  fonts (1 column on mobile → multi-column on desktop). Polls `/api/spl` same-origin
+  (no CORS).
+- **Three panels only** (SPL A Slow, 2-min Leq, 15-min Leq) — the values we actually
+  produce. No SPL A Fast (a REW meter is Slow *or* Fast; simultaneous needs REW Pro).
+- **Thresholds are 3-level (green/orange/red), per panel, and editable from the web UI**,
+  persisted to `config.json` via `POST /api/config` → `save_config()` (survives reboot).
+  Validated server-side (`validate_thresholds`: numeric, in range, `orange ≤ red`,
+  `null` allowed). `GET /api/config` returns them. Defaults: Slow 98/100, 15-min 94/95,
+  2-min none.
+- **Max is bridge-tracked** per panel (`SPLState.maxes`), updated every poll, exposed as
+  `max_*` in `/api/spl`. **Not** reset by auto-recovery (true session-max); reset via
+  `POST /api/control {"action":"reset_max"}` (and on shutdown).
+- `POST /api/config` and `/api/control` are **unauthenticated** (same trust model as the
+  rest — fine on an isolated show LAN).
+
+---
+
 ## 8. Build & release
 
 - **PyInstaller** (`rew_bridge.spec`, one-folder, entry `tray_app.py`) → **Inno Setup**

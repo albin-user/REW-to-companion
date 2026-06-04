@@ -45,6 +45,7 @@ The app stores its settings in `config.json`. On Windows, this is located in `%L
 | `rew_api_port` | `4735` | REW API port |
 | `log_level` | `"INFO"` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `rew_gui` | `true` | Show REW GUI when running. `true` = GUI shown; `false` = headless (`-nogui`) |
+| `thresholds` | per-panel limits | Green/orange/red dB limits per panel for the dashboard. Editable live from the web UI (⚙ Limits) and persisted here. `null` for a panel = no colour |
 
 On first run, the app auto-selects a free port starting at 8080 and saves it to `config.json`.
 
@@ -64,7 +65,9 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 - Polls REW's SPL meter levels and auto-starts metering on connect (values flow with no manual start)
 - Reconstructs an exact 2-minute rolling Leq from REW's native 1-minute Leq (not natively available in REW)
 - Exposes values via simple HTTP API for Bitfocus Companion
-- Control commands: start, stop, restart, shutdown
+- Built-in **responsive web dashboard** at `/` — live SPL/Leq readouts, per-panel Max, and editable green/orange/red thresholds (saved on the server)
+- **Self-healing:** auto-recovers a stalled meter (~2 s) and relaunches REW if its process crashes (~28 s)
+- Control commands: start, stop, restart, shutdown, reset_max
 - File logging with rotation (1 MB, 3 backups)
 
 ## Available Values
@@ -180,7 +183,7 @@ python generate_icon.py
 pyinstaller --clean rew_bridge.spec
 
 # Build installer (requires Inno Setup on Windows)
-iscc /DMyAppVersion=0.3.2 installer.iss
+iscc /DMyAppVersion=0.3.3 installer.iss
 ```
 
 ### Releases

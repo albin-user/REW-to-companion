@@ -26,9 +26,12 @@ from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-__version__ = "0.3.2"
+from dashboard import DASHBOARD_HTML
+
+__version__ = "0.3.3"
 
 # App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent
@@ -57,7 +60,48 @@ DEFAULTS = {
     "rew_api_port": 4735,
     "log_level": "INFO",
     "rew_gui": True,
+    "thresholds": {
+        "spl_a_slow": {"orange": 98.0, "red": 100.0},
+        "leq_2min": None,
+        "leq_15min": {"orange": 94.0, "red": 95.0},
+    },
 }
+
+# The three displayed values, used for both thresholds and max tracking.
+PANEL_KEYS = ("spl_a_slow", "leq_2min", "leq_15min")
+
+
+def validate_thresholds(raw) -> dict:
+    """Coerce a thresholds mapping to {panel: None | {orange, red}} with checks.
+
+    Accepts the three panel keys; each is either null (no colour) or an object
+    with numeric orange/red (either may be null). Raises ValueError on bad input.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("thresholds must be an object")
+
+    def num(x):
+        if x is None or x == "":
+            return None
+        x = float(x)
+        if not (0.0 <= x <= 200.0):
+            raise ValueError("threshold out of range 0-200")
+        return x
+
+    result = {}
+    for key in PANEL_KEYS:
+        v = raw.get(key)
+        if v is None:
+            result[key] = None
+            continue
+        if not isinstance(v, dict):
+            raise ValueError(f"{key} must be null or an object")
+        orange = num(v.get("orange"))
+        red = num(v.get("red"))
+        if orange is not None and red is not None and orange > red:
+            raise ValueError(f"{key}: orange must be <= red")
+        result[key] = {"orange": orange, "red": red}
+    return result
 
 
 def load_config() -> dict:
@@ -72,8 +116,9 @@ def load_config() -> dict:
             for key in DEFAULTS:
                 if key in user_config:
                     config[key] = user_config[key]
-        except (json.JSONDecodeError, OSError) as e:
-            # Will be logged once logging is set up; use defaults
+        except (json.JSONDecodeError, OSError):
+            # Malformed/unreadable config: fall back to defaults silently
+            # (logging isn't configured yet at this point).
             pass
 
     # Validate types and ranges
@@ -90,6 +135,11 @@ def load_config() -> dict:
     if not isinstance(config.get("rew_gui"), bool):
         print(f"WARNING: Invalid rew_gui {config.get('rew_gui')!r}, coercing to bool", file=sys.stderr)
         config["rew_gui"] = bool(config.get("rew_gui", False))
+    try:
+        config["thresholds"] = validate_thresholds(config.get("thresholds"))
+    except (ValueError, TypeError):
+        print(f"WARNING: Invalid thresholds {config.get('thresholds')!r}, using defaults", file=sys.stderr)
+        config["thresholds"] = validate_thresholds(DEFAULTS["thresholds"])
 
     return config
 
@@ -221,6 +271,20 @@ class SPLState:
     leq1m_history: deque = field(default_factory=deque)
     rew_running: bool = False
     measurement_active: bool = False
+    # Per-panel running max (not reset by auto-recovery; reset on command/shutdown).
+    maxes: dict = field(default_factory=lambda: {k: None for k in PANEL_KEYS})
+
+    def update_max(self, key: str, value: Optional[float]) -> None:
+        """Raise the stored max for a panel if the new value is higher."""
+        if value is None:
+            return
+        current = self.maxes.get(key)
+        if current is None or value > current:
+            self.maxes[key] = value
+
+    def reset_maxes(self) -> None:
+        for key in self.maxes:
+            self.maxes[key] = None
 
     def record_leq1m(self, timestamp: float, leq1m: float) -> None:
         """Append a 1-min Leq sample and drop history older than the retain window."""
@@ -270,7 +334,12 @@ http_client: Optional[httpx.AsyncClient] = None
 
 class ControlRequest(BaseModel):
     """Control command request."""
-    action: str  # start, stop, restart, shutdown
+    action: str  # start, stop, restart, shutdown, reset_max
+
+
+class ConfigUpdate(BaseModel):
+    """Threshold update from the dashboard."""
+    thresholds: dict
 
 
 class SPLValues(BaseModel):
@@ -460,6 +529,11 @@ def update_state_from_levels(data: dict) -> None:
     if leq1m is not None:
         state.record_leq1m(now, leq1m)
 
+    # Track per-panel max for the three displayed values.
+    state.update_max("spl_a_slow", state.spl_a_slow)
+    state.update_max("leq_15min", state.leq_15min)
+    state.update_max("leq_2min", state.compute_leq_2min())
+
 
 async def send_spl_command(command: str) -> bool:
     """Send a command to the SPL meter."""
@@ -488,7 +562,7 @@ async def shutdown_rew():
         return
 
     try:
-        response = await http_client.post(
+        await http_client.post(
             f"{REW_API_BASE}/application/command",
             json={"command": "Shutdown"}
         )
@@ -519,6 +593,7 @@ async def shutdown_rew():
     state.elapsed_time = 0.0
     state.last_update = 0.0
     state.leq1m_history.clear()
+    state.reset_maxes()
 
 
 _restart_lock = asyncio.Lock()
@@ -675,6 +750,9 @@ async def get_spl():
         "leq_2min": round(leq_2min, 1) if leq_2min is not None else None,
         "leq_10min": state.leq_10min,
         "leq_15min": state.leq_15min,
+        "max_spl_a_slow": round(state.maxes["spl_a_slow"], 1) if state.maxes["spl_a_slow"] is not None else None,
+        "max_leq_2min": round(state.maxes["leq_2min"], 1) if state.maxes["leq_2min"] is not None else None,
+        "max_leq_15min": round(state.maxes["leq_15min"], 1) if state.maxes["leq_15min"] is not None else None,
         "elapsed_time": state.elapsed_time,
         "valid_2min": leq_2min is not None,
         "rew_running": state.rew_running,
@@ -720,8 +798,36 @@ async def control(request: ControlRequest):
         state.measurement_active = False
         return {"status": "ok", "action": action}
 
+    elif action == "reset_max":
+        state.reset_maxes()
+        return {"status": "ok", "action": action}
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """Serve the live SPL dashboard."""
+    return DASHBOARD_HTML
+
+
+@app.get("/api/config")
+async def get_config():
+    """Return the editable dashboard thresholds."""
+    return {"thresholds": config["thresholds"]}
+
+
+@app.post("/api/config")
+async def update_config(payload: ConfigUpdate):
+    """Validate new thresholds and persist them to config.json (survives reboot)."""
+    try:
+        config["thresholds"] = validate_thresholds(payload.thresholds)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid thresholds: {e}")
+    save_config(config)
+    logger.info("Thresholds updated and saved")
+    return {"status": "ok", "thresholds": config["thresholds"]}
 
 
 @app.get("/health")

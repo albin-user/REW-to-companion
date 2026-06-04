@@ -3,5 +3,10 @@
     "bridge_port": 8080,
     "rew_api_port": 4735,
     "log_level": "INFO",
-    "rew_gui": true
+    "rew_gui": true,
+    "thresholds": {
+        "spl_a_slow": { "orange": 98.0, "red": 100.0 },
+        "leq_2min": null,
+        "leq_15min": { "orange": 94.0, "red": 95.0 }
+    }
 }
