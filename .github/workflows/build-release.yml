@@ -37,6 +37,48 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --clean rew_bridge.spec
 
+      # Launch the REAL built (windowed, no-console) exe exactly as a user would
+      # and prove its web server actually comes up. This is what catches
+      # frozen-only startup bugs (e.g. sys.stdout is None) that never show when
+      # running from source. If /health doesn't answer, the release is blocked.
+      - name: Smoke-test the built exe (must serve /health)
+        shell: pwsh
+        run: |
+          $exe = "dist\REW SPL Bridge\REW SPL Bridge.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Built exe not found: $exe"; exit 1 }
+          Write-Host "Launching $exe ..."
+          $proc = Start-Process -FilePath $exe -PassThru
+
+          # The app picks a free port on first run and saves it; default is 8080.
+          $cfg = Join-Path $env:LOCALAPPDATA 'REW SPL Bridge\config.json'
+
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            $port = 8080
+            if (Test-Path $cfg) {
+              try { $port = (Get-Content $cfg -Raw | ConvertFrom-Json).bridge_port } catch {}
+            }
+            try {
+              $r = Invoke-WebRequest -Uri "http://localhost:$port/health" -TimeoutSec 3 -UseBasicParsing
+              if ($r.StatusCode -eq 200) {
+                Write-Host "Smoke test PASSED on port $port -> $($r.Content)"
+                $ok = $true; break
+              }
+            } catch {
+              Write-Host "attempt $i (port $port): server not up yet"
+            }
+          }
+
+          # Tear down the app (no REW exists on the runner, so this is just the bridge).
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Get-Process -Name 'REW SPL Bridge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          if (-not $ok) {
+            Write-Error "SMOKE TEST FAILED: the built exe never served /health. Release blocked."
+            exit 1
+          }
+
       - name: Build installer with Inno Setup
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.5
         with:
