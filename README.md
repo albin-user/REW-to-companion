@@ -29,6 +29,7 @@ A bridge that launches REW (Room EQ Wizard), reads SPL values from REW's API, an
 - **Green circle** — REW is connected and running
 - **Right-click menu:**
   - Status and port display
+  - Open Dashboard — opens the web dashboard in your browser; the menu label shows the LAN address (`IP:port`)
   - Show REW GUI — toggle headless vs. GUI mode (takes effect on next REW launch)
   - Change Port — opens a dialog to set a new port (restart required)
   - Open Log / Open Log Folder — access log files for troubleshooting
@@ -66,8 +67,9 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 - Reconstructs an exact 2-minute rolling Leq from REW's native 1-minute Leq (not natively available in REW)
 - Exposes values via simple HTTP API for Bitfocus Companion
 - Built-in **responsive web dashboard** at `/` — live SPL/Leq readouts, per-panel Max, and editable green/orange/red thresholds (saved on the server)
+- **Bitfocus Companion** ready — per-panel colour state + stale flag in the API so buttons mirror the dashboard with no threshold logic in Companion (see [COMPANION_SETUP.md](COMPANION_SETUP.md))
 - **Self-healing:** auto-recovers a stalled meter (~2 s) and relaunches REW if its process crashes (~28 s)
-- Control commands: start, stop, restart, shutdown, reset_max
+- Control commands: start, stop, restart, shutdown, reset_max (per-panel or all)
 - File logging with rotation (1 MB, 3 backups)
 
 ## Available Values
@@ -139,6 +141,16 @@ curl -X POST http://localhost:8080/api/control \
 curl -X POST http://localhost:8080/api/control \
   -H "Content-Type: application/json" \
   -d '{"action":"shutdown"}'
+
+# Reset the tracked Max for one panel (spl_a_slow | leq_2min | leq_15min)
+curl -X POST http://localhost:8080/api/control \
+  -H "Content-Type: application/json" \
+  -d '{"action":"reset_max","panel":"spl_a_slow"}'
+
+# Reset the Max for all panels (omit "panel")
+curl -X POST http://localhost:8080/api/control \
+  -H "Content-Type: application/json" \
+  -d '{"action":"reset_max"}'
 ```
 
 ### GET /health
