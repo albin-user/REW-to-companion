@@ -93,14 +93,27 @@ Returns current SPL values:
   "leq_2min": 74.8,
   "leq_10min": 73.5,
   "leq_15min": 73.1,
+  "max_spl_a_slow": 88.1,
+  "max_leq_2min": 80.3,
+  "max_leq_15min": 79.0,
+  "spl_a_slow_color": "green",
+  "leq_2min_color": "neutral",
+  "leq_15min_color": "green",
   "elapsed_time": 125.5,
   "valid_2min": true,
   "rew_running": true,
   "measurement_active": true,
+  "data_stale": false,
+  "seconds_since_update": 0.2,
   "buffer_samples": 1200,
   "buffer_seconds": 120.0
 }
 ```
+
+`*_color` is computed on the bridge from the dashboard thresholds (one of
+`green` / `orange` / `red` / `neutral` / `stale`) so Companion can mirror the
+dashboard colours with a plain string compare — no threshold logic in Companion.
+`data_stale` is `true` when the meter isn't producing fresh values.
 
 ### POST /api/control
 
@@ -143,14 +156,19 @@ Health check endpoint:
 
 ## Bitfocus Companion Integration
 
-Use the Generic HTTP module in Companion to poll `/api/spl` and display values.
+**See [COMPANION_SETUP.md](COMPANION_SETUP.md) for a full click‑by‑click guide** —
+value buttons, dashboard‑matched green/orange/red colours, per‑panel Max + Reset,
+and a no‑signal alert button.
 
-Example variable parsing:
-- `$.spl_a_slow` — Current SPL
-- `$.leq_1min` — 1-minute Leq
-- `$.leq_2min` — 2-minute Leq
-- `$.leq_10min` — 10-minute Leq
-- `$.leq_15min` — 15-minute Leq
+In short: use the Generic HTTP module to poll `/api/spl` and split fields with the
+built‑in `jsonpath()` expression. Useful paths:
+- `$.spl_a_slow`, `$.leq_2min`, `$.leq_15min` — the three values
+- `$.spl_a_slow_color`, `$.leq_2min_color`, `$.leq_15min_color` — colour state
+- `$.max_spl_a_slow` … — bridge‑tracked maxes
+- `$.data_stale` — no‑signal flag
+
+Reset a max with `POST /api/control` body `{"action":"reset_max","panel":"spl_a_slow"}`
+(omit `panel` to reset all).
 
 ## macOS
 
@@ -183,7 +201,7 @@ python generate_icon.py
 pyinstaller --clean rew_bridge.spec
 
 # Build installer (requires Inno Setup on Windows)
-iscc /DMyAppVersion=0.3.5 installer.iss
+iscc /DMyAppVersion=0.4.0 installer.iss
 ```
 
 ### Releases

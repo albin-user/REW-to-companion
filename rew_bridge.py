@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from dashboard import DASHBOARD_HTML
 
-__version__ = "0.3.5"
+__version__ = "0.4.0"
 
 # App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent
@@ -282,8 +282,12 @@ class SPLState:
         if current is None or value > current:
             self.maxes[key] = value
 
-    def reset_maxes(self) -> None:
-        for key in self.maxes:
+    def reset_maxes(self, key: Optional[str] = None) -> None:
+        """Reset the stored max for one panel, or all panels if key is None."""
+        if key is None:
+            for k in self.maxes:
+                self.maxes[k] = None
+        elif key in self.maxes:
             self.maxes[key] = None
 
     def record_leq1m(self, timestamp: float, leq1m: float) -> None:
@@ -335,6 +339,7 @@ http_client: Optional[httpx.AsyncClient] = None
 class ControlRequest(BaseModel):
     """Control command request."""
     action: str  # start, stop, restart, shutdown, reset_max
+    panel: Optional[str] = None  # for reset_max: one of PANEL_KEYS, or None = all
 
 
 class ConfigUpdate(BaseModel):
@@ -737,26 +742,63 @@ app = FastAPI(
 )
 
 
+def panel_color(key: str, value, active: bool) -> str:
+    """Server-side colour state for a panel, matching the dashboard's colorFor().
+
+    Returns one of: "stale" (no signal / measurement not running),
+    "neutral" (no threshold configured), "green", "orange", "red".
+    Lets Companion buttons mirror the dashboard with a simple string compare,
+    keeping the thresholds as a single source of truth (editable in the web UI).
+    """
+    if value is None or not active:
+        return "stale"
+    t = config["thresholds"].get(key)
+    if not t:
+        return "neutral"
+    red = t.get("red")
+    orange = t.get("orange")
+    if red is not None and value >= red:
+        return "red"
+    if orange is not None and value >= orange:
+        return "orange"
+    return "green"
+
+
 @app.get("/api/spl")
 async def get_spl():
     """Get current SPL values."""
     leq_2min = state.compute_leq_2min()
+    leq_2min = round(leq_2min, 1) if leq_2min is not None else None
     history = state.leq1m_history
     history_seconds = (history[-1][0] - history[0][0]) if len(history) >= 2 else 0.0
+    active = state.measurement_active
+    seconds_since_update = (
+        round(time.time() - state.last_update, 1) if state.last_update > 0 else None
+    )
+    # Round the panel values to 0.1 dB so Companion buttons can show them
+    # directly (no expression-side formatting needed).
+    spl_a_slow = round(state.spl_a_slow, 1) if state.spl_a_slow is not None else None
+    leq_15min = round(state.leq_15min, 1) if state.leq_15min is not None else None
 
     return {
-        "spl_a_slow": state.spl_a_slow,
+        "spl_a_slow": spl_a_slow,
         "leq_1min": state.leq_1min,
-        "leq_2min": round(leq_2min, 1) if leq_2min is not None else None,
+        "leq_2min": leq_2min,
         "leq_10min": state.leq_10min,
-        "leq_15min": state.leq_15min,
+        "leq_15min": leq_15min,
         "max_spl_a_slow": round(state.maxes["spl_a_slow"], 1) if state.maxes["spl_a_slow"] is not None else None,
         "max_leq_2min": round(state.maxes["leq_2min"], 1) if state.maxes["leq_2min"] is not None else None,
         "max_leq_15min": round(state.maxes["leq_15min"], 1) if state.maxes["leq_15min"] is not None else None,
+        # Per-panel colour state (matches the dashboard) for Companion feedbacks.
+        "spl_a_slow_color": panel_color("spl_a_slow", spl_a_slow, active),
+        "leq_2min_color": panel_color("leq_2min", leq_2min, active),
+        "leq_15min_color": panel_color("leq_15min", leq_15min, active),
         "elapsed_time": state.elapsed_time,
         "valid_2min": leq_2min is not None,
         "rew_running": state.rew_running,
-        "measurement_active": state.measurement_active,
+        "measurement_active": active,
+        "data_stale": not active,
+        "seconds_since_update": seconds_since_update,
         "buffer_samples": len(history),
         "buffer_seconds": round(history_seconds, 1)
     }
@@ -799,8 +841,11 @@ async def control(request: ControlRequest):
         return {"status": "ok", "action": action}
 
     elif action == "reset_max":
-        state.reset_maxes()
-        return {"status": "ok", "action": action}
+        panel = request.panel
+        if panel is not None and panel not in PANEL_KEYS:
+            raise HTTPException(status_code=400, detail=f"Unknown panel: {panel}")
+        state.reset_maxes(panel)
+        return {"status": "ok", "action": action, "panel": panel}
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")

@@ -206,6 +206,40 @@ goes stale — a human backstop over auto-recovery.
 
 ---
 
+## 7c. Companion integration (Route A) — v0.4.0
+
+Full operator guide lives in **`COMPANION_SETUP.md`**. Key design decisions:
+
+- **The bridge computes the colour, not Companion.** `/api/spl` now returns
+  `spl_a_slow_color` / `leq_2min_color` / `leq_15min_color`, each one of
+  `green` / `orange` / `red` / `neutral` / `stale`, from the same `panel_color()`
+  logic the dashboard uses. **Why:** keeps the thresholds a *single source of truth*
+  (editable only in the web UI, persisted on the bridge) and makes Companion trivial —
+  a plain "Variable: Check value == red" feedback, no dB math duplicated in Companion.
+  Change a limit in the web UI → both dashboard *and* Companion buttons follow.
+- **`data_stale` + `seconds_since_update`** added to `/api/spl` so a Companion alert
+  button can light up on a stalled meter without a second `/health` poll.
+- **Panel values rounded to 0.1 dB in `/api/spl`** (`spl_a_slow`, `leq_15min`; 2-min
+  was already rounded) so Companion can display them directly — no expression-side
+  formatting. Dashboard already did `toFixed(1)`, so no visible change there.
+- **Per-panel max reset.** `POST /api/control` `reset_max` now takes an optional
+  `"panel"` (one of `PANEL_KEYS`); omit it to reset all. Dashboard's button still
+  sends no panel (= reset all); Companion gets one reset button per panel.
+- **Companion mechanics that actually work (verified against module source + docs):**
+  - Generic HTTP **GET** action stores the body via the **"JSON Response Data Variable"**
+    option (with **"JSON Stringify Result" ON**) — the module does *not* do per-field
+    JSONPath itself.
+  - Split fields with Companion's built-in **`jsonpath($(custom:rew_raw), '$.field')`**
+    expression inside **"Set custom variable value to expression"** internal actions.
+    (Avoids the flaky generic-http "set from stored JSONresult via JSONpath" action that
+    has come and gone across versions — GitHub issues #56/#2388.)
+  - Colour via the **"Variable: Check value"** internal feedback (reliable). Prefer it
+    over "Check boolean expression" which had an update-lag bug in ≤3.5 (issue #3386).
+  - Poll via a **Time interval trigger** (1 s; 0.5 s fine). No subscriptions needed.
+- **Still unauthenticated** — same accepted isolated-LAN trust model.
+
+---
+
 ## 8. Build & release
 
 - **PyInstaller** (`rew_bridge.spec`, one-folder, entry `tray_app.py`) → **Inno Setup**
