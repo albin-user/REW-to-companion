@@ -200,6 +200,31 @@ goes stale — a human backstop over auto-recovery.
 
 ---
 
+## 7d. Status window (v0.4.3)
+
+- A **Companion-style status window** (`status_window.py`) **opens at launch** and on
+  every restart: REW status dot, the dashboard address, a **live log tail**, and action
+  buttons. Closing it (X) **hides to tray**; **Quit** stops the whole app. Born from the
+  v0.4.0 silent-failure incident — a visible log pane means a startup problem is *seen*,
+  not guessed.
+- **Threading (do not "simplify" this):** pystray owns the **main thread**, so the window
+  runs tkinter's `mainloop()` in **its own thread**. **All Tk calls happen in that
+  thread.** Other threads never touch Tk widgets — they set a `threading.Event`
+  (`_show_requested`) that the window's `after()`-driven refresh reads. Status + log
+  updates are pulled by that 1 s refresh (reads `tray.connected`, tails `LOG_FILE`
+  incrementally by byte offset, handles rotation). Cross-thread Tk calls = random
+  crashes; keep the boundary.
+- The window is **non-essential**: it's opened inside a `try/except` in `on_setup`, and
+  its thread wraps everything in `try/except` logging. If tkinter ever fails (e.g. a
+  frozen-bundle issue), the **server still runs** — the window can't take the app down.
+- `tkinter` (and `scrolledtext`/`messagebox`/`simpledialog`) are listed in
+  `rew_bridge.spec` `hiddenimports` so PyInstaller reliably bundles the tcl/tk runtime
+  (the imports are function-level). Widget `padx`/`pady` take a **single** screen
+  distance — a `(a, b)` tuple is only valid in `.pack()`/`.grid()`, not the widget
+  constructor (this bit us once: `TclError: bad screen distance "0 12"`).
+
+---
+
 ## 7b. Web dashboard, thresholds & max (v0.3.3)
 
 - The bridge serves a **responsive web dashboard at `GET /`** (`dashboard.py`). HTML is

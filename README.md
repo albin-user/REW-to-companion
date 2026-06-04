@@ -19,7 +19,7 @@ A bridge that launches REW (Room EQ Wizard), reads SPL values from REW's API, an
    - Create a desktop shortcut and Start Menu entry
    - Optionally add a Windows Firewall rule
    - Optionally set it to start automatically on boot
-3. Launch from the desktop shortcut — a system tray icon appears near the clock
+3. Launch from the desktop shortcut — a **status window** opens (and a system tray icon appears near the clock)
 
 **Prerequisite:** [REW (Room EQ Wizard)](https://www.roomeqwizard.com/) must be installed separately.
 
@@ -29,12 +29,25 @@ A bridge that launches REW (Room EQ Wizard), reads SPL values from REW's API, an
 > [REW downloads page](https://www.roomeqwizard.com/) (look for the beta build).
 > This requirement will go away once the API ships in a stable REW release.
 
+### Status Window
+
+A status window **opens automatically at launch** (and on every restart). Like
+the Bitfocus Companion launcher, it shows:
+
+- **REW connection status** (green = connected, red = disconnected)
+- the **dashboard address** (`http://IP:port/`) with an **Open Dashboard** button
+- a **live log pane** so any problem is visible immediately
+- buttons: Open Dashboard, Open Log, Log Folder, Change Port, Hide to Tray, Quit
+
+Closing the window (**X**) hides it to the tray (the bridge keeps running). Click
+the tray icon (or **Show Window**) to bring it back. Use **Quit** to fully stop.
+
 ### System Tray Icon
 
 - **Red circle** — REW is not connected
 - **Green circle** — REW is connected and running
 - **Right-click menu:**
-  - Status and port display
+  - Show Window — re-open the status window
   - Open Dashboard — opens the web dashboard in your browser; the menu label shows the LAN address (`IP:port`)
   - Show REW GUI — toggle headless vs. GUI mode (takes effect on next REW launch)
   - Change Port — opens a dialog to set a new port (restart required)
@@ -72,6 +85,7 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 - Polls REW's SPL meter levels and auto-starts metering on connect (values flow with no manual start)
 - Reconstructs an exact 2-minute rolling Leq from REW's native 1-minute Leq (not natively available in REW)
 - Exposes values via simple HTTP API for Bitfocus Companion
+- **Status window** (opens at launch, Companion-style) — REW status, dashboard address, and a live log pane; hides to the tray
 - Built-in **responsive web dashboard** at `/` — live SPL/Leq readouts, per-panel Max, and editable green/orange/red thresholds (saved on the server)
 - **Bitfocus Companion** ready — per-panel colour state + stale flag in the API so buttons mirror the dashboard with no threshold logic in Companion (see [COMPANION_SETUP.md](COMPANION_SETUP.md))
 - **Self-healing:** auto-recovers a stalled meter (~2 s) and relaunches REW if its process crashes (~28 s)

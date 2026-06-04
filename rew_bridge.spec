@@ -25,6 +25,12 @@ a = Analysis(
         "sniffio",
         "email.mime.multipart",
         "email.mime.text",
+        # tkinter is imported at function level (status window + dialogs); list it
+        # explicitly so PyInstaller's tkinter hook bundles the tcl/tk runtime.
+        "tkinter",
+        "tkinter.scrolledtext",
+        "tkinter.messagebox",
+        "tkinter.simpledialog",
     ],
     hookspath=[],
     hooksconfig={},

@@ -24,6 +24,7 @@ import pystray
 import uvicorn
 
 import rew_bridge
+from status_window import StatusWindow
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class REWBridgeTray:
         self.connected = False
         self.server = None
         self.icon = None
+        self.window = None
         self._server_thread = None
         self._stop_event = threading.Event()
 
@@ -87,6 +89,7 @@ class REWBridgeTray:
                 enabled=False,
             ),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Show Window", self.show_window, default=True),
             pystray.MenuItem(
                 lambda item: f"Open Dashboard  ({get_local_ip()}:{self.config.get('bridge_port', 8080)})",
                 self.open_dashboard,
@@ -281,6 +284,12 @@ class REWBridgeTray:
             logger.warning("Could not update firewall rule: %s", e)
             return False
 
+    def show_window(self, icon=None, item=None):
+        """Open the status window (or bring it to front if already open)."""
+        if self.window is None:
+            self.window = StatusWindow(self)
+        self.window.start()
+
     def open_dashboard(self, icon=None, item=None):
         """Open the web dashboard in the default browser (at the LAN address)."""
         port = self.config.get("bridge_port", 8080)
@@ -341,8 +350,16 @@ class REWBridgeTray:
         failure here would leave the app running with no server and no clue why.
         Catch and log it explicitly so the log file always shows the real cause.
         """
+        icon.visible = True
+
+        # Open the status window FIRST so it's visible (and shows the log)
+        # even if the server fails to start. It runs in its own thread.
         try:
-            icon.visible = True
+            self.show_window()
+        except Exception:
+            logger.exception("Failed to open status window")
+
+        try:
             self.start_server()
 
             health_thread = threading.Thread(target=self.health_check_loop, daemon=True)
