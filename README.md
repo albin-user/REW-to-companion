@@ -183,7 +183,7 @@ python generate_icon.py
 pyinstaller --clean rew_bridge.spec
 
 # Build installer (requires Inno Setup on Windows)
-iscc /DMyAppVersion=0.3.4 installer.iss
+iscc /DMyAppVersion=0.3.5 installer.iss
 ```
 
 ### Releases

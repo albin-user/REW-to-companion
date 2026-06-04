@@ -28,6 +28,19 @@ import rew_bridge
 logger = logging.getLogger(__name__)
 
 
+def get_local_ip() -> str:
+    """Best-effort primary LAN IP (the interface used for outbound traffic)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "localhost"
+
+
 class REWBridgeTray:
     def __init__(self):
         self.connected = False
@@ -74,7 +87,10 @@ class REWBridgeTray:
                 enabled=False,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Open Dashboard", self.open_dashboard),
+            pystray.MenuItem(
+                lambda item: f"Open Dashboard  ({get_local_ip()}:{self.config.get('bridge_port', 8080)})",
+                self.open_dashboard,
+            ),
             pystray.MenuItem(
                 "Show REW GUI",
                 self.toggle_rew_gui,
@@ -266,9 +282,9 @@ class REWBridgeTray:
             return False
 
     def open_dashboard(self, icon=None, item=None):
-        """Open the web dashboard in the default browser."""
+        """Open the web dashboard in the default browser (at the LAN address)."""
         port = self.config.get("bridge_port", 8080)
-        webbrowser.open(f"http://localhost:{port}/")
+        webbrowser.open(f"http://{get_local_ip()}:{port}/")
 
     def open_log(self, icon=None, item=None):
         """Open the log file in the default text editor."""
