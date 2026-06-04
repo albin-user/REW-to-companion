@@ -163,10 +163,15 @@ SPL monitoring. Never ship without auto-recovery.**
 (fixed ~130 s Leq history, reused HTTP client, steady poll loop) + auto-recovery +
 auto-reconnect (loses REW → re-establishes + reconfigures).
 
-**Known gap:** if REW **fully crashes** (not just stalls), the bridge shows
-"disconnected" but does **not relaunch REW** — it waits for the API to return.
-*TODO (do before truly-unattended deployment):* relaunch REW if its process has died
-(throttled).
+**Self-healing failure tiers (all validated live):**
+1. **Meter stall** (REW alive, clock frozen) → re-issue `Start` (~2 s).
+2. **API blip** (briefly unreachable) → auto-reconnect + reconfigure.
+3. **Full REW crash** (process dies) → **relaunch a fresh REW** after ~20 s of being
+   unreachable, throttled and process-death guarded (v0.3.2). Validated by killing
+   `roomeqwizard.exe`: recovered in ~28 s (20 s grace + REW boot).
+
+So a 24/7 deployment self-heals from a stalled input, a flaky API, and an outright
+crash, with no human intervention.
 
 **OS / deployment (not code):** enable Windows **auto-login** (tray app needs a
 session after reboot), **defer Windows Update reboots** (active hours), **disable

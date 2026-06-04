@@ -28,7 +28,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 # App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent
@@ -189,6 +189,7 @@ REW_API_BASE = f"http://localhost:{REW_API_PORT}"
 POLL_INTERVAL = 0.2              # how often to poll REW for levels (s) ~5 Hz
 ELAPSED_STALE_SECONDS = 2.0      # if elapsedTime hasn't moved in this long, meter is idle
 METER_RESTART_RETRY = 5.0        # min seconds between auto-restart attempts
+REW_RELAUNCH_RETRY = 20.0        # if REW stays unreachable this long and its process is gone, relaunch it
 
 # 2-minute Leq is reconstructed from REW's own rolling 1-minute Leq engine.
 # A 2-min window is the energy average of two contiguous, non-overlapping 1-min
@@ -547,8 +548,10 @@ async def restart_rew():
 
 
 async def poll_levels_loop():
-    """Poll REW for SPL levels, update state, and reconnect/reconfigure as needed."""
+    """Poll REW for levels and recover from meter stalls, disconnects, and crashes."""
     failures = 0
+    down_since = None      # when REW first became unreachable (None while connected)
+    last_relaunch = 0.0    # throttle for crash-relaunch attempts
     while True:
         try:
             response = await http_client.get(
@@ -556,6 +559,7 @@ async def poll_levels_loop():
                 timeout=5.0
             )
             if response.status_code == 200:
+                down_since = None
                 if not state.rew_running:
                     # (Re)connected to REW: configure the meter and auto-start it.
                     logger.info("REW API connection established")
@@ -575,15 +579,36 @@ async def poll_levels_loop():
             else:
                 logger.warning("REW levels returned status %s", response.status_code)
                 failures += 1
+                if down_since is None:
+                    down_since = time.time()
                 if state.rew_running and failures >= 3:
                     state.rew_running = False
         except httpx.RequestError:
             failures += 1
+            if down_since is None:
+                down_since = time.time()
             if state.rew_running and failures >= 3:
                 logger.warning("Lost connection to REW API")
                 state.rew_running = False
         except Exception:
             logger.exception("Unexpected error in poll loop")
+
+        # REW-crash relaunch: if REW has been unreachable for a sustained period
+        # (not just a blip) and its process is gone, launch a fresh REW. Throttled
+        # so we never spawn extra instances; the process check avoids relaunching a
+        # REW that is alive but momentarily unresponsive.
+        if (down_since is not None
+                and time.time() - down_since > REW_RELAUNCH_RETRY
+                and time.time() - last_relaunch > REW_RELAUNCH_RETRY
+                and (rew_process is None or rew_process.poll() is not None)):
+            last_relaunch = time.time()
+            logger.warning("REW unreachable and its process is gone - relaunching")
+            if launch_rew() and await wait_for_rew_api():
+                state.rew_running = True
+                down_since = None
+                await configure_spl_meter()
+                await start_meter()
+
         await asyncio.sleep(POLL_INTERVAL)
 
 
