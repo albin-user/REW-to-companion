@@ -2,7 +2,7 @@
 """
 REW SPL Meter Bridge
 
-Launches REW headlessly, reads SPL values from REW's API,
+Launches REW (with GUI by default), reads SPL values from REW's API,
 exposes them via HTTP for Bitfocus Companion, and accepts control commands.
 """
 
@@ -57,7 +57,7 @@ DEFAULTS = {
     "bridge_port": 8080,
     "rew_api_port": 4735,
     "log_level": "INFO",
-    "rew_gui": False,
+    "rew_gui": True,
 }
 
 

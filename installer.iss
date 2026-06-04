@@ -33,7 +33,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "autostart"; Description: "Start automatically when Windows starts"; GroupDescription: "Startup:"
 Name: "firewall"; Description: "Add Windows Firewall rule (recommended)"; GroupDescription: "Network:"; Flags: checkedonce
-Name: "rewgui"; Description: "Show REW GUI when running (default: headless)"; GroupDescription: "REW:"
+Name: "rewgui"; Description: "Show REW GUI when running (recommended — easier to troubleshoot)"; GroupDescription: "REW:"; Flags: checkedonce
 
 [Files]
 Source: "dist\REW SPL Bridge\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

@@ -1,6 +1,6 @@
 # REW SPL Meter Bridge
 
-A bridge that launches REW (Room EQ Wizard) headlessly, reads SPL values from REW's API, and exposes them via HTTP for Bitfocus Companion integration. On Windows, it runs as a system tray application with an installer.
+A bridge that launches REW (Room EQ Wizard), reads SPL values from REW's API, and exposes them via HTTP for Bitfocus Companion integration. On Windows, it runs as a system tray application with an installer. REW's GUI is shown by default (easier to troubleshoot); it can be run headless via the tray menu or config.
 
 ## Architecture
 
@@ -44,7 +44,7 @@ The app stores its settings in `config.json`. On Windows, this is located in `%L
 | `bridge_port` | `8080` | HTTP port for the bridge server |
 | `rew_api_port` | `4735` | REW API port |
 | `log_level` | `"INFO"` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `rew_gui` | `false` | Show REW GUI when running. `false` = headless (`-nogui`) |
+| `rew_gui` | `true` | Show REW GUI when running. `true` = GUI shown; `false` = headless (`-nogui`) |
 
 On first run, the app auto-selects a free port starting at 8080 and saves it to `config.json`.
 
@@ -60,7 +60,7 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 
 ## Features
 
-- Launches REW automatically with API mode enabled (`-api -nogui`)
+- Launches REW automatically with API mode enabled (`-api`; GUI shown by default, headless optional)
 - Polls REW's SPL meter levels and auto-starts metering on connect (values flow with no manual start)
 - Reconstructs an exact 2-minute rolling Leq from REW's native 1-minute Leq (not natively available in REW)
 - Exposes values via simple HTTP API for Bitfocus Companion
@@ -160,7 +160,7 @@ On macOS, run the bridge from source (see Development section below). The tray a
 ```bash
 pip install -r requirements.txt
 
-# Bridge only (headless)
+# Bridge only (no tray UI)
 python rew_bridge.py
 
 # System tray app (Windows)

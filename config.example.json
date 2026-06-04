@@ -3,5 +3,5 @@
     "bridge_port": 8080,
     "rew_api_port": 4735,
     "log_level": "INFO",
-    "rew_gui": false
+    "rew_gui": true
 }
