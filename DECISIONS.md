@@ -69,6 +69,11 @@ errors. Headless is still available via the tray toggle or config.
 Source of truth: REW's OpenAPI spec at `http://localhost:4735/doc.json` (Swagger 2.0,
 "REW REST API"), cross-checked against a live instance.
 
+- **The REST API is BETA-only (as of 2026-06-04).** The API is only present in REW
+  **beta** builds, not the current stable release. The venue PC must run a REW beta
+  for any of this to work. Re-check when REW promotes the API to stable — at that
+  point this note (and the README prerequisite) can be relaxed.
+
 - **Readiness:** `GET /application` returns **404** — it is not a valid endpoint.
   Use `GET /spl-meter/1/levels` (200) to detect the API is up. (Old code polled
   `/application` and never became "ready".)

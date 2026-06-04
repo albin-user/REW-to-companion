@@ -23,6 +23,12 @@ A bridge that launches REW (Room EQ Wizard), reads SPL values from REW's API, an
 
 **Prerequisite:** [REW (Room EQ Wizard)](https://www.roomeqwizard.com/) must be installed separately.
 
+> ⚠️ **REW API requires a beta build (as of 2026-06-04).** The REST API this
+> bridge depends on is only available in REW **beta** releases — it is **not** in
+> the current stable release. Install the latest REW **beta** from the
+> [REW downloads page](https://www.roomeqwizard.com/) (look for the beta build).
+> This requirement will go away once the API ships in a stable REW release.
+
 ### System Tray Icon
 
 - **Red circle** — REW is not connected
