@@ -33,6 +33,7 @@ class REWBridgeTray:
         self.connected = False
         self.server = None
         self.icon = None
+        self._server_thread = None
         self._stop_event = threading.Event()
 
     @property
@@ -75,7 +76,7 @@ class REWBridgeTray:
             pystray.MenuItem(
                 "Show REW GUI",
                 self.toggle_rew_gui,
-                checked=lambda item: self.config.get("rew_gui", False),
+                checked=lambda item: self.config.get("rew_gui", True),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Change Port...", self.change_port),
@@ -98,8 +99,8 @@ class REWBridgeTray:
         )
         self.server = uvicorn.Server(uv_config)
 
-        thread = threading.Thread(target=self.server.run, daemon=True)
-        thread.start()
+        self._server_thread = threading.Thread(target=self.server.run, daemon=True)
+        self._server_thread.start()
         logger.info("Uvicorn server started on port %s", port)
 
     def health_check_loop(self):
@@ -147,7 +148,7 @@ class REWBridgeTray:
         import tkinter as tk
         from tkinter import messagebox
 
-        old_value = self.config.get("rew_gui", False)
+        old_value = self.config.get("rew_gui", True)
         new_value = not old_value
         self.config["rew_gui"] = new_value
         try:
@@ -162,6 +163,10 @@ class REWBridgeTray:
             )
             root.destroy()
             return
+
+        # Refresh the menu so the checkmark reflects the new setting immediately.
+        if self.icon:
+            self.icon.update_menu()
 
         root = tk.Tk()
         root.withdraw()
@@ -279,22 +284,28 @@ class REWBridgeTray:
             p.communicate()  # Wait and reap to avoid ResourceWarning
 
     def quit(self, icon=None, item=None):
-        """Clean shutdown: stop server, shutdown REW, release tray icon."""
-        logger.info("Quit requested — shutting down")
+        """Clean shutdown: stop the server (whose lifespan shutdown closes REW),
+        wait for it to finish, then release the tray icon."""
+        logger.info("Quit requested - shutting down")
         self._stop_event.set()
 
-        # Force-exit safety net — start BEFORE icon.stop() in case it blocks
+        # Force-exit safety net in case graceful shutdown hangs.
         def _force_exit():
-            time.sleep(12)
+            time.sleep(15)
             logger.warning("Graceful shutdown timed out, forcing exit")
             logging.shutdown()
             os._exit(0)
 
         threading.Thread(target=_force_exit, daemon=True).start()
 
-        # Stop uvicorn — triggers lifespan shutdown which handles REW cleanup
+        # Ask uvicorn to stop. Its lifespan shutdown is what closes REW, so we
+        # must WAIT for the server thread to finish before letting the main
+        # thread exit — otherwise the daemon server thread is killed mid-shutdown
+        # and REW is left running (orphaned).
         if self.server:
             self.server.should_exit = True
+        if self._server_thread:
+            self._server_thread.join(timeout=12)
 
         # Release tray icon (unblocks main thread)
         if self.icon:
