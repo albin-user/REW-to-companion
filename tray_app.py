@@ -15,6 +15,7 @@ import socket
 import subprocess
 import threading
 import time
+import webbrowser
 
 import httpx
 import PIL.Image
@@ -72,6 +73,8 @@ class REWBridgeTray:
                 None,
                 enabled=False,
             ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Open Dashboard", self.open_dashboard),
             pystray.MenuItem(
                 "Show REW GUI",
                 self.toggle_rew_gui,
@@ -261,6 +264,11 @@ class REWBridgeTray:
         except Exception as e:
             logger.warning("Could not update firewall rule: %s", e)
             return False
+
+    def open_dashboard(self, icon=None, item=None):
+        """Open the web dashboard in the default browser."""
+        port = self.config.get("bridge_port", 8080)
+        webbrowser.open(f"http://localhost:{port}/")
 
     def open_log(self, icon=None, item=None):
         """Open the log file in the default text editor."""
