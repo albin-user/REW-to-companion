@@ -188,6 +188,7 @@ REW_API_BASE = f"http://localhost:{REW_API_PORT}"
 # bookkeeping, and REW's "cancel subscription on any missed 200" failure mode.
 POLL_INTERVAL = 0.2              # how often to poll REW for levels (s) ~5 Hz
 ELAPSED_STALE_SECONDS = 2.0      # if elapsedTime hasn't moved in this long, meter is idle
+METER_RESTART_RETRY = 5.0        # min seconds between auto-restart attempts
 
 # 2-minute Leq is reconstructed from REW's own rolling 1-minute Leq engine.
 # A 2-min window is the energy average of two contiguous, non-overlapping 1-min
@@ -211,6 +212,10 @@ class SPLState:
     last_update: float = 0.0
     # Wall-clock time elapsedTime last changed; used to detect an idle meter.
     last_elapsed_change: float = 0.0
+    # Whether the meter is supposed to be running, so we can auto-recover an
+    # unexpected stall without overriding a deliberate Companion "stop".
+    meter_should_run: bool = False
+    last_meter_start_attempt: float = 0.0
     # History of (timestamp, leq1m) used to reconstruct the 2-min Leq.
     leq1m_history: deque = field(default_factory=deque)
     rew_running: bool = False
@@ -409,6 +414,8 @@ async def configure_spl_meter():
 
 async def start_meter() -> bool:
     """Start the SPL meter so values flow (used on connect and for the start command)."""
+    state.meter_should_run = True
+    state.last_meter_start_attempt = time.time()
     success = await send_spl_command("Start")
     if success:
         state.measurement_active = True
@@ -503,6 +510,7 @@ async def shutdown_rew():
 
     state.rew_running = False
     state.measurement_active = False
+    state.meter_should_run = False
     state.spl_a_slow = None
     state.leq_15min = None
     state.leq_1min = None
@@ -555,6 +563,14 @@ async def poll_levels_loop():
                     await configure_spl_meter()
                     await start_meter()
                 update_state_from_levels(response.json())
+                # Auto-recover: if the meter should be running but has stalled
+                # (REW stopped metering, e.g. the input dropped out), re-issue
+                # Start. Throttled, and gated on meter_should_run so a deliberate
+                # Companion "stop" is respected.
+                if (state.meter_should_run and not state.measurement_active
+                        and time.time() - state.last_meter_start_attempt > METER_RESTART_RETRY):
+                    logger.info("SPL meter stalled but should be running - re-issuing Start")
+                    await start_meter()
                 failures = 0
             else:
                 logger.warning("REW levels returned status %s", response.status_code)
@@ -663,6 +679,7 @@ async def control(request: ControlRequest):
 
         success = await send_spl_command("Stop")
         if success:
+            state.meter_should_run = False
             state.measurement_active = False
             state.leq1m_history.clear()
         return {"status": "ok" if success else "error", "action": action}
