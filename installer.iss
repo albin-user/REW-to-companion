@@ -47,7 +47,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; No post-install "Launch now": launching this tray app from the elevated
+; installer (via runasoriginaluser) hangs pystray's tray-icon init. Users launch
+; from the Start Menu / desktop shortcut (works), or it autostarts at login if
+; that task was selected. See DECISIONS.md section 5.
 
 [Code]
 const
