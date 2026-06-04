@@ -335,12 +335,20 @@ class REWBridgeTray:
             self.icon.stop()
 
     def on_setup(self, icon):
-        """Called by pystray after the icon is visible. Runs in a separate thread."""
-        icon.visible = True
-        self.start_server()
+        """Called by pystray after the icon is visible. Runs in a separate thread.
 
-        health_thread = threading.Thread(target=self.health_check_loop, daemon=True)
-        health_thread.start()
+        pystray runs this in its own thread and swallows any exception, so a
+        failure here would leave the app running with no server and no clue why.
+        Catch and log it explicitly so the log file always shows the real cause.
+        """
+        try:
+            icon.visible = True
+            self.start_server()
+
+            health_thread = threading.Thread(target=self.health_check_loop, daemon=True)
+            health_thread.start()
+        except Exception:
+            logger.exception("Fatal error during tray startup (server not started)")
 
     def run(self):
         """Run the tray application (blocks main thread)."""

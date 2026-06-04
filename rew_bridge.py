@@ -24,6 +24,15 @@ from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
+# PyInstaller "--noconsole" / windowed builds (and pythonw) leave sys.stdout and
+# sys.stderr as None. Anything that touches them then crashes — notably uvicorn's
+# log formatter (sys.stdout.isatty()) and any print(..., file=sys.stderr). Point
+# them at the null device so the frozen app can never fail silently at startup.
+# (This is the whole reason the installed exe wouldn't start its server.)
+for _stream_name in ("stdout", "stderr"):
+    if getattr(sys, _stream_name, None) is None:
+        setattr(sys, _stream_name, open(os.devnull, "w", encoding="utf-8"))
+
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -31,7 +40,7 @@ from pydantic import BaseModel
 
 from dashboard import DASHBOARD_HTML
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 # App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent

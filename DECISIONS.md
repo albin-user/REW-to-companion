@@ -129,6 +129,18 @@ SPL monitoring. Never ship without auto-recovery.**
 
 ## 5. Packaging / installer gotchas
 
+- **🔴 Windowed (`--noconsole`) builds have `sys.stdout`/`sys.stderr == None` — this
+  silently broke server startup (v0.4.0).** uvicorn's log formatter does
+  `sys.stdout.isatty()`, so **`uvicorn.Config(...)` raised `AttributeError`** during
+  `start_server()`. It ran in pystray's setup thread, which **swallows exceptions**, so
+  the installed exe just sat there: tray icon up, no server on :8080, nothing past
+  `Starting ... tray application` in the log. It only ever showed up in the *installed*
+  exe (source runs have a real console), which is why it slipped through. **Fix
+  (v0.4.1):** at the top of `rew_bridge.py`, redirect `sys.stdout`/`sys.stderr` to
+  `os.devnull` when they're `None`, before anything touches them. Also wrapped
+  `on_setup()` in try/except that `logger.exception(...)`s, so a startup crash can never
+  again be invisible. **Reproduce without building:** run `pythonw tray_app.py` (pythonw
+  also has `stdout=None`). Don't remove the devnull guard.
 - **Quit must wait for graceful shutdown, or REW is orphaned.** The tray runs uvicorn
   in a **daemon** thread; the lifespan shutdown (which closes REW) runs there. If the
   main thread exits immediately after `icon.stop()`, that daemon thread is killed
