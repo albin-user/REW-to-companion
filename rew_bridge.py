@@ -40,7 +40,7 @@ from pydantic import BaseModel
 
 from dashboard import DASHBOARD_HTML
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 # App directory (read-only bundled assets like app_icon.ico)
 APP_DIR = pathlib.Path(__file__).parent
