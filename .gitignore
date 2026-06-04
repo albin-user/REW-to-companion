@@ -46,3 +46,4 @@ config.json
 # Build artifacts
 installer_output/
 *.spec.bak
+app_icon.ico

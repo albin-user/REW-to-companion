@@ -26,7 +26,6 @@ from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 __version__ = "0.3.0"
@@ -269,7 +268,7 @@ class ControlRequest(BaseModel):
 
 
 class SPLValues(BaseModel):
-    """SPL values received from REW subscription."""
+    """SPL values read from REW's /spl-meter/{id}/levels endpoint."""
     meterNumber: int = 1
     weighting: str = "A"
     filter: str = "Slow"
@@ -313,7 +312,7 @@ def find_rew_executable() -> Optional[str]:
 
 
 def launch_rew() -> Optional[subprocess.Popen]:
-    """Launch REW with API enabled and no GUI."""
+    """Launch REW with the API enabled (GUI shown unless rew_gui is false)."""
     global rew_process
 
     system = platform.system()
@@ -396,7 +395,8 @@ async def configure_spl_meter():
             f"{REW_API_BASE}/spl-meter/1/configuration",
             json=meter_config
         )
-        if response.status_code == 200:
+        # REW may answer 200 (done) or 202 (accepted) per the API docs.
+        if response.status_code in (200, 202):
             logger.info("SPL meter configured successfully")
             return True
         else:
@@ -460,7 +460,8 @@ async def send_spl_command(command: str) -> bool:
             f"{REW_API_BASE}/spl-meter/1/command",
             json={"command": command}
         )
-        if response.status_code == 200:
+        # REW may answer 200 (done) or 202 (accepted) per the API docs.
+        if response.status_code in (200, 202):
             logger.info(f"SPL meter command '{command}' sent successfully")
             return True
         else:
