@@ -55,14 +55,14 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 | Bridge won't start | Check `rew_bridge.log` for errors (right-click tray → Open Log) |
 | Companion can't connect | Verify the firewall rule exists, check the port in the tray menu |
 | REW not found | Set `rew_path` in `config.json` to the full path of `roomeqwizard.exe` |
-| SPL values are null | Ensure REW measurement is started (POST `/api/control` with `{"action":"start"}`) |
+| SPL values are null | The meter auto-starts on connect; if values stay null, check the log and confirm REW's audio input is selected. You can also force a start (POST `/api/control` with `{"action":"start"}`) |
 | Tray icon stays red | REW may still be starting — wait 30 seconds. Check log for API errors |
 
 ## Features
 
 - Launches REW automatically with API mode enabled (`-api -nogui`)
-- Subscribes to real-time SPL meter updates
-- Computes 2-minute rolling Leq (not natively available in REW)
+- Polls REW's SPL meter levels and auto-starts metering on connect (values flow with no manual start)
+- Reconstructs an exact 2-minute rolling Leq from REW's native 1-minute Leq (not natively available in REW)
 - Exposes values via simple HTTP API for Bitfocus Companion
 - Control commands: start, stop, restart, shutdown
 - File logging with rotation (1 MB, 3 backups)
@@ -73,7 +73,7 @@ On first run, the app auto-selects a free port starting at 8080 and saves it to 
 |-------|--------|
 | SPL A Slow | Direct from REW API |
 | 1-min Leq | Direct from REW API |
-| 2-min Leq | Computed from buffered SPL readings |
+| 2-min Leq | Computed: energy average of REW's current and 60 s-ago 1-min Leq |
 | 10-min Leq | Direct from REW API |
 | 15-min Leq | Direct from REW API (rolling Leq) |
 

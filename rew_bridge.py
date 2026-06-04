@@ -157,6 +157,12 @@ def setup_logging(log_level: str = "INFO"):
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
+    # Quiet noisy third-party loggers. At ~5 polls/sec, httpx/httpcore would
+    # otherwise log a line per request and churn the rotating log within hours,
+    # discarding the events that actually matter for troubleshooting.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # Load config and set up logging
 config = load_config()
@@ -177,11 +183,22 @@ logger.info("Configuration: bridge_port=%s, rew_api_port=%s, log_level=%s, rew_p
 REW_API_PORT = config["rew_api_port"]
 BRIDGE_PORT = config["bridge_port"]
 REW_API_BASE = f"http://localhost:{REW_API_PORT}"
-SUBSCRIPTION_CALLBACK_URL = f"http://localhost:{BRIDGE_PORT}/rew-callback"
 
-# 2-minute Leq buffer: 2 minutes * 60 seconds * 10 Hz = 1200 samples
-LEQ_2MIN_BUFFER_SIZE = 1200
-LEQ_2MIN_MIN_SAMPLES = 1200  # Require full 2 minutes for valid calculation
+# SPL levels are read by polling REW's GET /spl-meter/1/levels rather than by
+# subscribing. Polling avoids the inbound callback server, the re-subscribe
+# bookkeeping, and REW's "cancel subscription on any missed 200" failure mode.
+POLL_INTERVAL = 0.2              # how often to poll REW for levels (s) ~5 Hz
+ELAPSED_STALE_SECONDS = 2.0      # if elapsedTime hasn't moved in this long, meter is idle
+
+# 2-minute Leq is reconstructed from REW's own rolling 1-minute Leq engine.
+# A 2-min window is the energy average of two contiguous, non-overlapping 1-min
+# Leqs: the current leq1m (covering [t-60, t]) and the leq1m from ~60 s ago
+# (covering [t-120, t-60]). This is exact and far more accurate than energy-
+# averaging buffered Slow SPL, and it does not depend on the subscription rate.
+LEQ_2MIN_WINDOW = 120.0          # total averaging window (s)
+LEQ_2MIN_SUBWINDOW = 60.0        # spacing between the two 1-min Leq samples (s)
+LEQ1M_HISTORY_SECONDS = 130.0    # how much leq1m history to retain (s)
+LEQ_2MIN_MATCH_TOLERANCE = 5.0   # max |dt| from the 60 s-ago target to accept (s)
 
 
 @dataclass
@@ -193,20 +210,49 @@ class SPLState:
     leq_10min: Optional[float] = None
     elapsed_time: float = 0.0
     last_update: float = 0.0
-    spl_buffer: deque = field(default_factory=lambda: deque(maxlen=LEQ_2MIN_BUFFER_SIZE))
+    # Wall-clock time elapsedTime last changed; used to detect an idle meter.
+    last_elapsed_change: float = 0.0
+    # History of (timestamp, leq1m) used to reconstruct the 2-min Leq.
+    leq1m_history: deque = field(default_factory=deque)
     rew_running: bool = False
     measurement_active: bool = False
 
+    def record_leq1m(self, timestamp: float, leq1m: float) -> None:
+        """Append a 1-min Leq sample and drop history older than the retain window."""
+        self.leq1m_history.append((timestamp, leq1m))
+        cutoff = timestamp - LEQ1M_HISTORY_SECONDS
+        while self.leq1m_history and self.leq1m_history[0][0] < cutoff:
+            self.leq1m_history.popleft()
+
     def compute_leq_2min(self) -> Optional[float]:
-        """Compute 2-minute Leq from buffered SPL values."""
-        if len(self.spl_buffer) < LEQ_2MIN_MIN_SAMPLES:
+        """Reconstruct the rolling 2-min Leq from REW's own 1-min Leq engine.
+
+        The 2-min window is the energy average of two contiguous, non-overlapping
+        1-min windows: the current leq1m (covering [t-60, t]) and the leq1m from
+        ~60 s ago (covering [t-120, t-60]). Both must be complete minutes, so the
+        measurement must have been running for at least 2 minutes.
+        """
+        if self.leq_1min is None or self.last_update == 0.0:
+            return None
+        # Require a full 2 minutes so both 1-min Leqs are complete windows.
+        if self.elapsed_time < LEQ_2MIN_WINDOW:
             return None
 
-        # Leq = 10 * log10(mean(10^(spl_i/10)))
+        # Find the leq1m sample closest to 60 s ago.
+        target = self.last_update - LEQ_2MIN_SUBWINDOW
+        older = None
+        best_dt = None
+        for ts, value in self.leq1m_history:
+            dt = abs(ts - target)
+            if best_dt is None or dt < best_dt:
+                best_dt, older = dt, value
+        if older is None or best_dt is None or best_dt > LEQ_2MIN_MATCH_TOLERANCE:
+            return None
+
         try:
-            linear_values = [10 ** (spl / 10) for spl in self.spl_buffer]
-            mean_linear = sum(linear_values) / len(linear_values)
-            return 10 * math.log10(mean_linear)
+            current_linear = 10 ** (self.leq_1min / 10)
+            older_linear = 10 ** (older / 10)
+            return 10 * math.log10((current_linear + older_linear) / 2)
         except (ValueError, ZeroDivisionError):
             return None
 
@@ -230,7 +276,7 @@ class SPLValues(BaseModel):
     spl: float
     leq: float
     isRollingLeq: bool = False
-    rollingLeqMinutes: int = 0
+    rollingLeqMinutes: float = 0.0
     leq1m: float = 0.0
     leq10m: float = 0.0
     sel: float = 0.0
@@ -322,7 +368,7 @@ async def wait_for_rew_api(timeout: float = 30.0) -> bool:
 
     while time.time() - start_time < timeout:
         try:
-            response = await http_client.get(f"{REW_API_BASE}/application")
+            response = await http_client.get(f"{REW_API_BASE}/spl-meter/1/levels")
             if response.status_code == 200:
                 logger.info("REW API is ready")
                 return True
@@ -361,22 +407,50 @@ async def configure_spl_meter():
         return False
 
 
-async def subscribe_to_spl_meter():
-    """Subscribe to SPL meter updates."""
+async def start_meter() -> bool:
+    """Start the SPL meter so values flow (used on connect and for the start command)."""
+    success = await send_spl_command("Start")
+    if success:
+        state.measurement_active = True
+        state.last_elapsed_change = time.time()
+    return success
+
+
+def _finite_or_none(x: Optional[float]) -> Optional[float]:
+    """Map NaN/inf to None. REW reports NaN for levels when there is no signal."""
+    if x is None or not math.isfinite(x):
+        return None
+    return x
+
+
+def update_state_from_levels(data: dict) -> None:
+    """Update shared state from a polled /spl-meter/1/levels response."""
     try:
-        response = await http_client.post(
-            f"{REW_API_BASE}/spl-meter/1/subscribe",
-            json={"callbackUrl": SUBSCRIPTION_CALLBACK_URL}
-        )
-        if response.status_code == 200:
-            logger.info(f"Subscribed to SPL meter updates (callback: {SUBSCRIPTION_CALLBACK_URL})")
-            return True
-        else:
-            logger.error(f"Failed to subscribe to SPL meter: {response.status_code}")
-            return False
-    except httpx.RequestError as e:
-        logger.error(f"Error subscribing to SPL meter: {e}")
-        return False
+        values = SPLValues(**data)
+    except Exception:
+        logger.debug("Could not parse SPL levels payload: %r", data)
+        return
+
+    now = time.time()
+    leq1m = _finite_or_none(values.leq1m)
+    state.spl_a_slow = _finite_or_none(values.spl)
+    if values.isRollingLeq and values.rollingLeqMinutes == 15:
+        state.leq_15min = _finite_or_none(values.leq)
+    state.leq_1min = leq1m
+    state.leq_10min = _finite_or_none(values.leq10m)
+
+    # The meter is "active" while elapsedTime keeps advancing. Tracking the time
+    # of the last change (rather than comparing magnitudes) is robust to polling
+    # faster than REW updates and to elapsedTime resetting on a new measurement.
+    if values.elapsedTime != state.elapsed_time:
+        state.elapsed_time = values.elapsedTime
+        state.last_elapsed_change = now
+    state.measurement_active = (now - state.last_elapsed_change) < ELAPSED_STALE_SECONDS
+
+    state.last_update = now
+    # Only record real 1-min Leq values for the 2-min reconstruction.
+    if leq1m is not None:
+        state.record_leq1m(now, leq1m)
 
 
 async def send_spl_command(command: str) -> bool:
@@ -407,7 +481,7 @@ async def shutdown_rew():
     try:
         response = await http_client.post(
             f"{REW_API_BASE}/application/command",
-            json={"command": "shutdown"}
+            json={"command": "Shutdown"}
         )
         logger.info("REW shutdown command sent")
     except httpx.RequestError:
@@ -434,7 +508,7 @@ async def shutdown_rew():
     state.leq_10min = None
     state.elapsed_time = 0.0
     state.last_update = 0.0
-    state.spl_buffer.clear()
+    state.leq1m_history.clear()
 
 
 _restart_lock = asyncio.Lock()
@@ -455,7 +529,7 @@ async def restart_rew():
             if await wait_for_rew_api():
                 state.rew_running = True
                 await configure_spl_meter()
-                await subscribe_to_spl_meter()
+                await start_meter()
                 logger.info("REW restarted successfully")
                 return True
 
@@ -463,39 +537,37 @@ async def restart_rew():
         return False
 
 
-async def subscription_keepalive():
-    """Periodically check REW connection and re-subscribe if needed."""
+async def poll_levels_loop():
+    """Poll REW for SPL levels, update state, and reconnect/reconfigure as needed."""
+    failures = 0
     while True:
         try:
             response = await http_client.get(
-                f"{REW_API_BASE}/application",
+                f"{REW_API_BASE}/spl-meter/1/levels",
                 timeout=5.0
             )
             if response.status_code == 200:
                 if not state.rew_running:
-                    logger.info("REW API connection restored")
+                    # (Re)connected to REW: configure the meter and auto-start it.
+                    logger.info("REW API connection established")
                     state.rew_running = True
                     await configure_spl_meter()
-                    await subscribe_to_spl_meter()
-                elif state.last_update > 0 and (time.time() - state.last_update) > 30:
-                    logger.info("No SPL data for 30s, re-subscribing")
-                    await configure_spl_meter()
-                    await subscribe_to_spl_meter()
-                elif state.last_update == 0 and state.rew_running:
-                    logger.info("No SPL data received yet, re-subscribing")
-                    await configure_spl_meter()
-                    await subscribe_to_spl_meter()
+                    await start_meter()
+                update_state_from_levels(response.json())
+                failures = 0
             else:
-                logger.warning("REW API returned status %s", response.status_code)
-                if state.rew_running:
+                logger.warning("REW levels returned status %s", response.status_code)
+                failures += 1
+                if state.rew_running and failures >= 3:
                     state.rew_running = False
         except httpx.RequestError:
-            if state.rew_running:
+            failures += 1
+            if state.rew_running and failures >= 3:
                 logger.warning("Lost connection to REW API")
                 state.rew_running = False
         except Exception:
-            logger.exception("Unexpected error in keepalive loop")
-        await asyncio.sleep(10)
+            logger.exception("Unexpected error in poll loop")
+        await asyncio.sleep(POLL_INTERVAL)
 
 
 @asynccontextmanager
@@ -513,24 +585,24 @@ async def lifespan(app: FastAPI):
         logger.info("REW is already running, connecting to existing instance")
         state.rew_running = True
         await configure_spl_meter()
-        await subscribe_to_spl_meter()
+        await start_meter()
     elif launch_rew():
         if await wait_for_rew_api():
             state.rew_running = True
             await configure_spl_meter()
-            await subscribe_to_spl_meter()
+            await start_meter()
         else:
             logger.error("REW launched but API did not become available")
 
-    # Start keepalive task
-    keepalive_task = asyncio.create_task(subscription_keepalive())
+    # Start polling task (also handles reconnect/reconfigure)
+    poll_task = asyncio.create_task(poll_levels_loop())
 
     yield
 
     # Shutdown
-    keepalive_task.cancel()
+    poll_task.cancel()
     try:
-        await keepalive_task
+        await poll_task
     except asyncio.CancelledError:
         pass
 
@@ -552,6 +624,8 @@ app = FastAPI(
 async def get_spl():
     """Get current SPL values."""
     leq_2min = state.compute_leq_2min()
+    history = state.leq1m_history
+    history_seconds = (history[-1][0] - history[0][0]) if len(history) >= 2 else 0.0
 
     return {
         "spl_a_slow": state.spl_a_slow,
@@ -563,8 +637,8 @@ async def get_spl():
         "valid_2min": leq_2min is not None,
         "rew_running": state.rew_running,
         "measurement_active": state.measurement_active,
-        "buffer_samples": len(state.spl_buffer),
-        "buffer_seconds": len(state.spl_buffer) / 10.0  # Assuming 10 Hz
+        "buffer_samples": len(history),
+        "buffer_seconds": round(history_seconds, 1)
     }
 
 
@@ -577,11 +651,9 @@ async def control(request: ControlRequest):
         if not state.rew_running:
             raise HTTPException(status_code=503, detail="REW is not running")
 
-        # Clear buffer when starting new measurement
-        state.spl_buffer.clear()
-        success = await send_spl_command("Start")
-        if success:
-            state.measurement_active = True
+        # Clear history when starting a new measurement
+        state.leq1m_history.clear()
+        success = await start_meter()
         return {"status": "ok" if success else "error", "action": action}
 
     elif action == "stop":
@@ -591,12 +663,12 @@ async def control(request: ControlRequest):
         success = await send_spl_command("Stop")
         if success:
             state.measurement_active = False
-            state.spl_buffer.clear()
+            state.leq1m_history.clear()
         return {"status": "ok" if success else "error", "action": action}
 
     elif action == "restart":
         success = await restart_rew()
-        state.spl_buffer.clear()
+        state.leq1m_history.clear()
         state.measurement_active = False
         return {"status": "ok" if success else "error", "action": action}
 
@@ -607,27 +679,6 @@ async def control(request: ControlRequest):
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
-
-
-@app.post("/rew-callback")
-async def rew_callback(values: SPLValues):
-    """Receive SPL updates from REW subscription."""
-    state.spl_a_slow = values.spl
-    state.leq_15min = values.leq if values.isRollingLeq and values.rollingLeqMinutes == 15 else state.leq_15min
-    state.leq_1min = values.leq1m
-    state.leq_10min = values.leq10m
-    # Detect measurement state from elapsed time progression
-    if values.elapsedTime > state.elapsed_time:
-        state.measurement_active = True
-    else:
-        state.measurement_active = False
-    state.elapsed_time = values.elapsedTime
-    state.last_update = time.time()
-
-    # Add to buffer for 2-min Leq calculation
-    state.spl_buffer.append(values.spl)
-
-    return {"status": "ok"}
 
 
 @app.get("/health")
@@ -643,4 +694,4 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=BRIDGE_PORT, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=BRIDGE_PORT, log_level="info", access_log=False)
