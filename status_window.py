@@ -21,6 +21,22 @@ logger = logging.getLogger(__name__)
 REFRESH_MS = 1000          # status + log poll cadence
 INITIAL_LOG_LINES = 300    # how much existing log to show on open
 MAX_LOG_LINES = 2500       # cap the text widget so it can't grow unbounded
+LOG_VISIBLE_LINES = 8      # how many log lines are visible at once
+
+# Palette — matches the web dashboard (dashboard.py)
+BG = "#0a0a0c"          # window background
+CARD = "#141417"        # raised panel
+EDGE = "#26262b"        # hairline borders
+MUTED = "#8a8a93"       # secondary text
+TEXT = "#f2f2f5"        # primary text
+GREEN = "#16c060"
+RED = "#ff3b30"
+ACCENT = "#1f6f3f"      # primary button
+ACCENT_HOVER = "#27814b"
+BTN = "#1d1d22"         # secondary button
+BTN_HOVER = "#26262d"
+LOG_BG = "#08080a"
+LOG_FG = "#cfcfd6"
 
 
 class StatusWindow:
@@ -63,71 +79,113 @@ class StatusWindow:
 
             root = tk.Tk()
             self.root = root
-            root.title(f"REW SPL Bridge v{rew_bridge.__version__}")
-            root.geometry("640x470")
-            root.minsize(540, 380)
+            root.title("REW SPL Bridge")
+            root.configure(bg=BG)
+            root.geometry("560x430")
+            root.minsize(480, 380)
             self._set_icon(root)
 
-            # --- Header: status dot + text, dashboard address ---
-            header = tk.Frame(root, padx=12, pady=10)
-            header.pack(fill="x")
+            outer = tk.Frame(root, bg=BG, padx=16, pady=14)
+            outer.pack(fill="both", expand=True)
 
-            self._status_dot = tk.Canvas(
-                header, width=16, height=16, highlightthickness=0
-            )
+            # --- Title row ---
+            titlerow = tk.Frame(outer, bg=BG)
+            titlerow.pack(fill="x")
+            tk.Label(titlerow, text="REW SPL Bridge", bg=BG, fg=TEXT,
+                     font=("Segoe UI Semibold", 15)).pack(side="left")
+            tk.Label(titlerow, text=f"v{rew_bridge.__version__}", bg=BG,
+                     fg=MUTED, font=("Segoe UI", 10)).pack(side="left",
+                                                           padx=(8, 0), pady=(5, 0))
+
+            # --- Status card ---
+            card = tk.Frame(outer, bg=CARD, highlightbackground=EDGE,
+                            highlightthickness=1, padx=14, pady=12)
+            card.pack(fill="x", pady=(12, 14))
+
+            statusrow = tk.Frame(card, bg=CARD)
+            statusrow.pack(fill="x")
+            self._status_dot = tk.Canvas(statusrow, width=14, height=14,
+                                         bg=CARD, highlightthickness=0)
             self._dot_id = self._status_dot.create_oval(
-                2, 2, 14, 14, fill="#888888", outline=""
-            )
-            self._status_dot.grid(row=0, column=0, padx=(0, 8))
+                1, 1, 13, 13, fill=MUTED, outline="")
+            self._status_dot.pack(side="left", pady=(2, 0))
+            self._status_var = tk.StringVar(value="Starting…")
+            tk.Label(statusrow, textvariable=self._status_var, bg=CARD, fg=TEXT,
+                     font=("Segoe UI Semibold", 12)).pack(side="left", padx=(9, 0))
 
-            self._status_var = tk.StringVar(value="REW: starting…")
-            tk.Label(
-                header, textvariable=self._status_var,
-                font=("Segoe UI", 12, "bold"),
-            ).grid(row=0, column=1, sticky="w")
+            self._addr_var = tk.StringVar(value="http://…")
+            tk.Label(card, text="DASHBOARD", bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 8)).pack(anchor="w", pady=(11, 0))
+            tk.Label(card, textvariable=self._addr_var, bg=CARD, fg="#7db1ff",
+                     font=("Consolas", 11)).pack(anchor="w")
 
-            self._addr_var = tk.StringVar(value="Dashboard: …")
-            tk.Label(
-                header, textvariable=self._addr_var, font=("Segoe UI", 10),
-                fg="#1a5fb4", cursor="hand2",
-            ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+            primary = self._make_button(card, "Open Dashboard",
+                                        self.tray.open_dashboard, primary=True)
+            primary.pack(anchor="w", pady=(12, 0))
 
-            # --- Buttons ---
-            btns = tk.Frame(root, padx=12, pady=4)
-            btns.pack(fill="x")
-            tk.Button(btns, text="Open Dashboard",
-                      command=self.tray.open_dashboard).pack(side="left")
-            tk.Button(btns, text="Open Log",
-                      command=self.tray.open_log).pack(side="left", padx=6)
-            tk.Button(btns, text="Log Folder",
-                      command=self.tray.open_log_folder).pack(side="left")
-            tk.Button(btns, text="Change Port…",
-                      command=self.tray.change_port).pack(side="left", padx=6)
-            tk.Button(btns, text="Quit", fg="#b00020",
-                      command=self._quit).pack(side="right")
-            tk.Button(btns, text="Hide to Tray",
-                      command=self._hide).pack(side="right", padx=6)
+            # --- Secondary actions ---
+            actions = tk.Frame(outer, bg=BG)
+            actions.pack(fill="x", pady=(0, 12))
+            for label, cmd in (
+                ("Open Log", self.tray.open_log),
+                ("Log Folder", self.tray.open_log_folder),
+                ("Change Port", self.tray.change_port),
+            ):
+                self._make_button(actions, label, cmd).pack(side="left",
+                                                            padx=(0, 8))
 
-            # --- Live log pane ---
-            tk.Label(root, text="Log", anchor="w", padx=12,
-                     fg="#666666").pack(fill="x")
-            logframe = tk.Frame(root, padx=12)
-            logframe.pack(fill="both", expand=True, pady=(0, 12))
+            # --- Live log pane (≈8 lines) ---
+            tk.Label(outer, text="LOG", bg=BG, fg=MUTED,
+                     font=("Segoe UI", 8)).pack(anchor="w")
+            logframe = tk.Frame(outer, bg=EDGE, highlightbackground=EDGE,
+                                highlightthickness=1)
+            logframe.pack(fill="x", pady=(4, 12))
             self._log_widget = scrolledtext.ScrolledText(
-                logframe, wrap="word", state="disabled",
-                font=("Consolas", 9), bg="#0e0e11", fg="#d8d8de",
-                insertbackground="#d8d8de",
+                logframe, wrap="none", state="disabled", height=LOG_VISIBLE_LINES,
+                font=("Consolas", 9), bg=LOG_BG, fg=LOG_FG, bd=0,
+                relief="flat", padx=8, pady=6, insertbackground=LOG_FG,
             )
             self._log_widget.pack(fill="both", expand=True)
+
+            # --- Footer: hide / quit ---
+            footer = tk.Frame(outer, bg=BG)
+            footer.pack(fill="x")
+            self._make_button(footer, "Quit", self._quit,
+                              danger=True).pack(side="right")
+            self._make_button(footer, "Hide to Tray",
+                              self._hide).pack(side="right", padx=(0, 8))
 
             root.protocol("WM_DELETE_WINDOW", self._hide)
 
             self._load_log_initial()
             self._refresh()
+
+            # Size the window to fit its content exactly, then lock vertical
+            # resizing so the log pane stays at LOG_VISIBLE_LINES lines.
+            root.update_idletasks()
+            root.geometry(f"560x{root.winfo_reqheight()}")
+            root.resizable(True, False)
+
             root.mainloop()
         except Exception:
             # The window is a convenience; never let it take the app down.
             logger.exception("Status window thread crashed")
+
+    def _make_button(self, parent, text, command, primary=False, danger=False):
+        """A flat, themed button with a hover state."""
+        import tkinter as tk
+
+        bg, hover = (ACCENT, ACCENT_HOVER) if primary else (BTN, BTN_HOVER)
+        fg = "#ff7a72" if danger else "#ffffff"
+        btn = tk.Button(
+            parent, text=text, command=command, relief="flat",
+            bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
+            font=("Segoe UI", 9), bd=0, padx=14, pady=7,
+            cursor="hand2", highlightthickness=0,
+        )
+        btn.bind("<Enter>", lambda e: btn.configure(bg=hover))
+        btn.bind("<Leave>", lambda e: btn.configure(bg=bg))
+        return btn
 
     def _set_icon(self, root):
         try:
@@ -183,11 +241,11 @@ class StatusWindow:
     def _refresh(self):
         connected = bool(getattr(self.tray, "connected", False))
         if connected:
-            self._status_dot.itemconfig(self._dot_id, fill="#16c060")
-            self._status_var.set("REW: Connected")
+            self._status_dot.itemconfig(self._dot_id, fill=GREEN)
+            self._status_var.set("Connected to REW")
         else:
-            self._status_dot.itemconfig(self._dot_id, fill="#ff3b30")
-            self._status_var.set("REW: Disconnected — starting or not reachable")
+            self._status_dot.itemconfig(self._dot_id, fill=RED)
+            self._status_var.set("Not connected — starting or unreachable")
 
         try:
             import tray_app  # lazy import avoids a circular import at module load
@@ -195,7 +253,7 @@ class StatusWindow:
         except Exception:
             ip = "localhost"
         port = self.tray.config.get("bridge_port", 8080)
-        self._addr_var.set(f"Dashboard:  http://{ip}:{port}/")
+        self._addr_var.set(f"http://{ip}:{port}/")
 
         self._poll_log()
 
