@@ -248,7 +248,7 @@ class REWBridgeTray:
         # Update firewall rule on Windows
         firewall_ok = True
         if platform.system() == "Windows":
-            firewall_ok = self._update_firewall_rule(current, new_port)
+            firewall_ok = self._update_firewall_rule(new_port)
 
         msg = f"Port changed to {new_port}.\nRestart the app for this to take effect."
         if not firewall_ok:
@@ -257,7 +257,7 @@ class REWBridgeTray:
         messagebox.showinfo("Port Changed", msg)
         root.destroy()
 
-    def _update_firewall_rule(self, old_port: int, new_port: int) -> bool:
+    def _update_firewall_rule(self, new_port: int) -> bool:
         """Update the Windows firewall rule via UAC-elevated netsh commands.
 
         Returns True if the firewall rule was likely updated, False otherwise.
